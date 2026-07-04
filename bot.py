@@ -371,6 +371,40 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Logs unexpected exceptions."""
     logger.error("Exception while handling an update:", exc_info=context.error)
+# Command handler for users to request files
+@app.on_message(filters.command("request") & filters.private)
+async def request_file(client, message):
+    # Check if the user has provided a file name along with the command
+    if len(message.command) < 2:
+        await message.reply_text(
+            "**Please provide the file name!**\n"
+            "Example: `/request Class 12 Physics Notes`"
+        )
+        return
+
+    # Extract the requested file name
+    file_request_name = message.text.split(None, 1)[1]
+    user_info = f"👤 **Name:** {message.from_user.first_name}\n🆔 **ID:** `{message.from_user.id}`"
+    
+    # Prepare the alert message for the admin
+    admin_msg = (
+        "🚨 **New File Request Received!**\n\n"
+        f"📂 **File Name:** {file_request_name}\n\n"
+        f"👥 **Requested By:**\n{user_info}"
+    )
+
+    try:
+        # Forward the request to your ADMIN_ID (already defined in your code)
+        await client.send_message(chat_id=ADMIN_ID, text=admin_msg)
+        
+        # Send confirmation to the user
+        await message.reply_text(
+            "✅ **Your request has been sent to the admin!**\n"
+            "As soon as the material is available, it will be uploaded to the bot."
+        )
+    except Exception as e:
+        await message.reply_text("❌ Something went wrong. Please try again later.")
+        print(f"Request error: {e}")
 
 def main():
     """Starts the bot."""
