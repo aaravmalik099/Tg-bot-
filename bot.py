@@ -160,7 +160,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Instant query acknowledgment to remove telegram processing delays
+    # Instant response to remove telegram loading lag
     await query.answer()
 
     if query.data == "verify":
@@ -296,11 +296,10 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📢 Broadcast Done!")
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Intercepts and parses file streams dynamically for structured saving."""
+    """Intercepts media documents specifically for admin upload streams."""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await handle_user_search(update, context)
-        return
+    if user_id != ADMIN_ID: return
+    
     message = update.message
     file_id, file_name, file_type = None, "Unnamed", None
     if message.document: file_id, file_name, file_type = message.document.file_id, message.document.file_name, "document"
@@ -316,16 +315,12 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles text query searches specifically for non-command messages."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
+    
     search_query = update.message.text
-    if search_query.startswith("/file_"):
-        try:
-            file_data = material_col.find_one({"_id": ObjectId(search_query.replace("/file_", ""))})
-            if file_data and file_data.get("status", "live") == "live":
-                await send_material_file(context.bot, user_id, file_data)
-        except Exception: pass
-        return
+    if search_query.startswith("/"): return # Let CommandHandlers process command strings
 
     results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
     count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
@@ -340,17 +335,18 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Pre-configure user scopes inside event loop on startup
     loop = asyncio.get_event_loop()
     loop.run_until_complete(setup_menus(app.bot))
 
-    # Strict Route Handlers Mapping
+    # Priority 1: Handlers with specific triggers (Commands & Inline Buttons)
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", start))
     app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CallbackQueryHandler(button_click))
+    
+    # Priority 2: Generic filters (Media and Message types)
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search))
 
