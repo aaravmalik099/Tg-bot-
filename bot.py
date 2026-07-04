@@ -96,7 +96,7 @@ async def show_main_menu(message_obj, name, is_edit=True):
     ]
     text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain!"
     if is_edit:
-        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await message_obj.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -110,14 +110,13 @@ async def show_categories_menu(message_obj, is_edit=True):
     if not categories:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
         msg = "🗂️ Abhi tak koi category nahi banayi gayi hai."
-        if is_edit: await message_obj.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        if is_edit: await message_obj.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         else: await message_obj.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return
     
-    # Strictly safe structure routing prefix
     keyboard = [[InlineKeyboardButton(f"📂 {cat}", callback_data=f"vcat_{cat}")] for cat in categories]
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")])
-    if is_edit: await message_obj.edit_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
+    if is_edit: await message_obj.edit_message_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -133,7 +132,7 @@ async def manage_files_list(query):
     """Lists files inside admin interface."""
     files = list(material_col.find({}))
     if not files:
-        await query.edit_text("🗂️ Database khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")]]))
+        await query.edit_message_text("🗂️ Database khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")]]))
         return
 
     keyboard = []
@@ -141,7 +140,7 @@ async def manage_files_list(query):
         status_icon = "🟢" if f.get("status", "live") == "live" else "🔴"
         keyboard.append([InlineKeyboardButton(f"{status_icon} [{f['category']}-{f.get('subject','General')}] {f['file_name']}", callback_data=f"editfile_{f['_id']}")])
     keyboard.append([InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")])
-    await query.edit_text("📂 *Manage Content (Click to edit):*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await query.edit_message_text("📂 *Manage Content (Click to edit):*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def edit_file_options(query, file_id):
     """Interactive individual settings configuration panel for files."""
@@ -156,14 +155,13 @@ async def edit_file_options(query, file_id):
         [InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del_{file_id}")],
         [InlineKeyboardButton("🔙 Back to List", callback_data="manage_files")]
     ]
-    await query.edit_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await query.edit_message_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Central processing module for high-speed callback handling."""
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Fast trigger acknowledgment to avoid loading spins on user app
     await query.answer()
 
     try:
@@ -179,7 +177,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         elif query.data == "admin_home" and user_id == ADMIN_ID:
             keyboard = [[InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")], [InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]]
-            await query.edit_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data == "manage_files" and user_id == ADMIN_ID:
             await manage_files_list(query)
@@ -208,7 +206,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("📚 SSC", callback_data="tcat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="tcat_UPSC")],
                 [InlineKeyboardButton("💻 Banking", callback_data="tcat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="tcat_NEET_JEE")]
             ]
-            await query.edit_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("tcat_") and user_id == ADMIN_ID:
             tcat = query.data.split("_")[1]
@@ -218,7 +216,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("📐 Maths", callback_data="tsub_Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="tsub_GK")],
                     [InlineKeyboardButton("🧠 Reasoning", callback_data="tsub_Reasoning"), InlineKeyboardButton("🔤 English", callback_data="tsub_English")]
                 ]
-                await query.edit_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+                await query.edit_message_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("tsub_") and user_id == ADMIN_ID:
             tsub = query.data.split("_")[1]
@@ -241,10 +239,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             total_users = users_col.count_documents({})
             total_files = material_col.count_documents({})
             back = "admin_home" if user_id == ADMIN_ID else "go_home"
-            await query.edit_text(f"📊 *Bot Status:*\n\n👥 Users: {total_users}\n📂 Files: {total_files}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=back)]]), parse_mode="Markdown")
+            await query.edit_message_text(f"📊 *Bot Status:*\n\n👥 Users: {total_users}\n📂 Files: {total_files}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=back)]]), parse_mode="Markdown")
 
         elif query.data == "my_profile":
-            await query.edit_text(f"👤 *Profile:*\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]), parse_mode="Markdown")
+            await query.edit_message_text(f"👤 *Profile:*\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]), parse_mode="Markdown")
 
         elif query.data == "view_cats":
             await show_categories_menu(query.message, is_edit=True)
@@ -253,24 +251,22 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cat_name = query.data.replace("vcat_", "")
             subjects = material_col.distinct("subject", {"category": cat_name, "status": "live"})
             if not subjects:
-                await query.edit_text(f"❌ {cat_name} me koi live subjects nahi hain.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_cats")]]))
+                await query.edit_message_text(f"❌ {cat_name} me koi live subjects nahi hain.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_cats")]]))
                 return
-            # Splitting collision dynamic fix using double underscores '__'
             keyboard = [[InlineKeyboardButton(f"📚 {sub}", callback_data=f"vsub_{cat_name}__{sub}")] for sub in subjects]
             keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats")])
-            await query.edit_text(f"📂 *Category: {cat_name}*\nSubject chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text(f"📂 *Category: {cat_name}*\nSubject chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("vsub_"):
-            # Double underscore protection guarantees absolute key value distribution
             payload = query.data.replace("vsub_", "")
             cat_name, sub_name = payload.split("__")
             materials = list(material_col.find({"category": cat_name, "subject": sub_name, "status": "live"}))
             if not materials:
-                await query.edit_text("❌ Khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"vcat_{cat_name}")]]))
+                await query.edit_message_text("❌ Khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"vcat_{cat_name}")]]))
                 return
             keyboard = [[InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sfile_{mat['_id']}")] for mat in materials]
             keyboard.append([InlineKeyboardButton("🔙 Back to Subjects", callback_data=f"vcat_{cat_name}")])
-            await query.edit_text(f"📚 *{cat_name} ➡️ {sub_name}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            await query.edit_message_text(f"📚 *{cat_name} ➡️ {sub_name}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("sfile_"):
             fid = query.data.split("_")[1]
@@ -286,7 +282,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     [InlineKeyboardButton("📐 Maths", callback_data="asub_Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="asub_GK")],
                     [InlineKeyboardButton("🧠 Reasoning", callback_data="asub_Reasoning"), InlineKeyboardButton("🔤 English", callback_data="asub_English")]
                 ]
-                await query.edit_text(f"Category *{category}* done. Select **Subject**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+                await query.edit_message_text(f"Category *{category}* done. Select **Subject**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("asub_") and user_id == ADMIN_ID:
             subject = query.data.replace("asub_", "")
@@ -295,7 +291,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 file_data["subject"] = subject
                 file_data["status"] = "live"
                 material_col.insert_one(file_data)
-                await query.edit_text("✅ *Successfully Saved!*", parse_mode="Markdown")
+                await query.edit_message_text("✅ *Successfully Saved!*", parse_mode="Markdown")
                 admin_states.pop(user_id, None)
                 
     except Exception as e:
