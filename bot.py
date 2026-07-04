@@ -83,8 +83,19 @@ async def show_main_menu(message_obj, name):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+async def edit_to_main_menu(query, name):
+    keyboard = [
+        [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
+        [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), 
+         InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
+    ]
+    await query.edit_message_text(
+        f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video, Notes chahiye, aap unka Naam chat me type karke search kar sakte hain!",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
 # ==========================================================
-# 🎛️ CALLBACK QUERY SECTION (Button Clicks Fixed)
+# 🎛️ CALLBACK QUERY SECTION (Navigation Enhanced)
 # ==========================================================
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -98,40 +109,50 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await context.bot.send_message(chat_id=user_id, text="❌ Mujhe abhi bhi aap channel me nahi dikhe. Dubara join karein aur Verify dabayein.")
 
+    elif query.data == "go_home":
+        await edit_to_main_menu(query, query.from_user.first_name)
+
     elif query.data == "bot_stats":
         total_users = users_col.count_documents({})
         total_files = material_col.count_documents({})
-        await query.message.reply_text(f"📊 *Bot Live Status:*\n\n👥 Total Users: {total_users}\n📂 Total Files Uploaded: {total_files}", parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
+        await query.edit_message_text(f"📊 *Bot Live Status:*\n\n👥 Total Users: {total_users}\n📂 Total Files Uploaded: {total_files}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif query.data == "my_profile":
-        await query.message.reply_text(f"👤 *Aapki Profile:*\n\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}\n🔗 Username: @{query.from_user.username}", parse_mode="Markdown")
+        keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
+        await query.edit_message_text(f"👤 *Aapki Profile:*\n\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}\n🔗 Username: @{query.from_user.username}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif query.data == "view_cats":
         categories = material_col.distinct("category")
         if not categories:
-            await query.message.reply_text("🗂️ Abhi tak koi category nahi banayi gayi hai. Admin jald hi material upload karenge!")
+            keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
+            await query.edit_message_text("🗂️ Abhi tak koi category nahi banayi gayi hai. Admin jald hi material upload karenge!", reply_markup=InlineKeyboardMarkup(keyboard))
             return
         
         keyboard = [[InlineKeyboardButton(cat, callback_data=f"cat_{cat}")] for cat in categories]
-        await query.message.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
+        keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]) # Home button inside category list
+        await query.edit_message_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("cat_"):
         category_name = query.data.split("_")[1]
         materials = list(material_col.find({"category": category_name}))
         
         if not materials:
-            await query.message.reply_text(f"❌ {category_name} me abhi koi file nahi hai.")
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="view_cats")]]
+            await query.edit_message_text(f"❌ {category_name} me abhi koi file nahi hai.", reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
-        # Create inline buttons for each file in that category
         keyboard = []
         for mat in materials:
             keyboard.append([InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sendfile_{mat['_id']}")])
         
-        keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats")])
-        await query.message.reply_text(f"📚 *Category: {category_name}*\n\nFile download karne ke liye niche button par click karein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        # Dual Navigation: Back and Home Buttons
+        keyboard.append([
+            InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats"),
+            InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")
+        ])
+        await query.edit_message_text(f"📚 *Category: {category_name}*\n\nFile download karne ke liye niche button par click karein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    # Direct File Sending via Button Click
     elif query.data.startswith("sendfile_"):
         file_obj_id = query.data.split("_")[1]
         try:
@@ -143,7 +164,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Error sending file via button: {e}")
 
-    # Admin Category selection callback during upload
     elif query.data.startswith("admin_cat_"):
         if user_id != ADMIN_ID: return
         category = query.data.replace("admin_cat_", "")
@@ -212,7 +232,6 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     search_query = update.message.text
     
-    # Text commands for getting file
     if search_query.startswith("/file_"):
         try:
             file_obj_id = search_query.replace("/file_", "")
@@ -226,7 +245,6 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
             await update.message.reply_text("❌ Invalid File Code.")
         return
 
-    # Global search
     results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}})
     count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}})
 
@@ -255,3 +273,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
