@@ -245,7 +245,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"👤 *Profile:*\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]), parse_mode="Markdown")
 
         elif query.data == "view_cats":
-            await show_categories_menu(query.message, is_edit=True)
+            ​await query.message.edit_text(text=f"📂 Category: {cat_name}\nSubject chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("vcat_"):
             cat_name = query.data.replace("vcat_", "")
