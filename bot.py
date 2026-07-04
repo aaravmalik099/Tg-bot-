@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from pymongo import MongoClient
@@ -23,7 +24,7 @@ db = client['tg_material_bot']
 users_col = db['users']
 material_col = db['materials']
 
-# Admin State Tracker (To track what admin is uploading)
+# Admin State Tracker
 admin_states = {}
 
 # ==========================================================
@@ -95,7 +96,7 @@ async def edit_to_main_menu(query, name):
     )
 
 # ==========================================================
-# 🎛️ CALLBACK QUERY SECTION (Navigation Enhanced)
+# 🎛️ CALLBACK QUERY SECTION
 # ==========================================================
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -130,7 +131,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         keyboard = [[InlineKeyboardButton(cat, callback_data=f"cat_{cat}")] for cat in categories]
-        keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]) # Home button inside category list
+        keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")])
         await query.edit_message_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif query.data.startswith("cat_"):
@@ -146,7 +147,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for mat in materials:
             keyboard.append([InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sendfile_{mat['_id']}")])
         
-        # Dual Navigation: Back and Home Buttons
         keyboard.append([
             InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats"),
             InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")
@@ -174,6 +174,40 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             inserted = material_col.insert_one(file_data)
             await query.message.reply_text(f"✅ *Success!* File database me save ho gayi.\n\n📂 Category: {category}\n📝 Name: {file_data['file_name']}\n🔢 Short Code: `/file_{inserted.inserted_id}`", parse_mode="Markdown")
             admin_states.pop(user_id, None)
+
+# ==========================================================
+# 📢 ADMIN BROADCAST SECTION (New Feature)
+# ==========================================================
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+
+    # Check if text is provided after /broadcast
+    if not context.args:
+        await update.message.reply_text("❌ *Format Galat Hai!*\n\nUse: `/broadcast Aapka Message Yahan Likhein`", parse_mode="Markdown")
+        return
+
+    broadcast_text = update.message.text.split(None, 1)[1]
+    all_users = users_col.find({})
+    
+    success_count = 0
+    failed_count = 0
+    
+    status_msg = await update.message.reply_text("⏳ *Broadcast Shuru Ho Raha Hai...*", parse_mode="Markdown")
+    
+    for user in all_users:
+        try:
+            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
+            success_count += 1
+            await asyncio.sleep(0.05) # Small delay to avoid Telegram flood limits
+        except Exception:
+            failed_count += 1
+            
+    await status_msg.edit_text(
+        f"📢 *Broadcast Report:*\n\n✅ Sent Successfully: `{success_count}` users\n❌ Failed/Blocked: `{failed_count}` users",
+        parse_mode="Markdown"
+    )
 
 # ==========================================================
 # 📂 ADMIN MATERIAL UPLOAD SECTION
@@ -263,6 +297,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast_command)) # Broadcast handler added
     app.add_handler(CallbackQueryHandler(button_click))
     
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
@@ -273,4 +308,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
