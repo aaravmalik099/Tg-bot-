@@ -31,6 +31,7 @@ db = client['tg_material_bot']
 users_col = db['users']
 material_col = db['materials']
 co_admins_col = db['co_admins']  # New collection to persist multi-user upload permissions
+dynamic_buttons_col = db['dynamic_buttons']  # Super Admin custom channels/bots buttons
 
 # State Memory for Actions & Conversations
 admin_states = {}
@@ -86,9 +87,7 @@ async def setup_menus(application: Application):
                 ("request", "📥 Request Material"),
                 ("admin", "👑 Admin Panel"),
                 ("broadcast", "📢 Broadcast Message"),
-                ("addcoadmin", "➕ Add Co-Admin"),
-                ("removecoadmin", "➖ Remove Co-Admin"),
-                ("coadmins", "👥 List Co-Admins")
+                ("coadmins", "👥 Manage Co-Admins")
             ]
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
         logger.info("Bot commands menu registered successfully.")
@@ -111,7 +110,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}")],
             [InlineKeyboardButton("🔄 Verify Me", callback_data="verify")]
         ]
-        await update.message.reply_text("❌ Pehle upar diye channel ko join karein!", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("Pepehle upar diye channel ko join karein!", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     await show_main_menu(update.message, user.first_name, is_edit=False)
@@ -121,7 +120,8 @@ async def show_main_menu(message_obj, name, is_edit=True):
     keyboard = [
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
         [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")],
-        [InlineKeyboardButton("📢 More Channels", callback_data="more_channels"), InlineKeyboardButton("🤖 More Bots", callback_data="more_bots")]
+        [InlineKeyboardButton("📥 Request Files", callback_data="user_req_file")],
+        [InlineKeyboardButton("✨ More Buttons ✨", callback_data="more_combined")]
     ]
     
     text = (
@@ -131,7 +131,7 @@ async def show_main_menu(message_obj, name, is_edit=True):
         f"• Aap seedhe chat me kisi bhi subject ya chapter ka naam (e.g., *Physics Notes*) likh kar bhej sakte hain, bot use automatically dhoodh lega!\n"
         f"• Ya fir niche diye gaye **View Categories** option ka use karke systematic tariqe se padh sakte hain.\n\n"
         f"📥 **Kuch alag se chahiye?**\n"
-        f"Agar koi material na mile, toh chat me `/request` likh kar direct humse maang sakte hain!\n\n"
+        f"Agar koi material na mile, toh niche diye gaye **Request Files** button ka use karke direct humse maang sakte hain!\n\n"
         f"🎯 *Padhte rahiye, badhte rahiye!*"
     )
     
@@ -168,7 +168,6 @@ async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(context.bot, user_id): return
 
     if len(context.args) < 1:
-        # User only typed /request, switch them to listening mode
         user_states[user_id] = "waiting_for_request"
         await update.message.reply_text(
             "📝 **Aapko kaunse extra notes ya study material chahiye?**\n\n"
@@ -177,7 +176,6 @@ async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # User directly typed the material alongside command, process immediately
     file_request_name = " ".join(context.args)
     await process_and_send_request(update, context, user_id, file_request_name)
 
@@ -193,16 +191,25 @@ async def process_and_send_request(update, context, user_id, file_request_name):
                  f"ℹ️ *Aap unhe directly provide kar sakte hain ya database me upload kar sakte hain.*",
             parse_mode='Markdown'
         )
-        await update.message.reply_text(
-            "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
-            "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
-            parse_mode='Markdown'
-        )
-        # Clear request conversation state safely
+        if update.callback_query:
+            await update.callback_query.message.reply_text(
+                "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
+                "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
+                "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
+                parse_mode='Markdown'
+            )
         user_states.pop(user_id, None)
     except Exception as e:
         logger.error(f"Error in dispatching request to admin: {e}")
-        await update.message.reply_text("❌ Upsee! Request bhejte samay kuch dikkat aayi. Kripya baad me try karein.")
+        if update.callback_query:
+            await update.callback_query.message.reply_text("❌ Upsee! Request bhejte samay kuch dikkat aayi. Kripya baad me try karein.")
+        else:
+            await update.message.reply_text("❌ Upsee! Request bhejte samay kuch dikkat aayi. Kripya baad me try karein.")
 
 # ==========================================
 # SECTION 8: ADMINISTRATIVE MANAGEMENT (MULTI-USER SUPPORT)
@@ -240,34 +247,66 @@ async def remove_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid User ID format.")
 
 async def list_co_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lists all active authorized co-admins/contributors."""
+    """Lists and provides inline control for authorized co-admins/contributors."""
     if update.effective_user.id != ADMIN_ID: return
+    await show_co_admins_panel(update.message, is_edit=False)
+
+async def show_co_admins_panel(message_obj, is_edit=True):
     co_list = list(co_admins_col.find({}))
+    keyboard = []
+    msg = "👑 **Co-Admin Management Panel:**\n\n"
     if not co_list:
-        await update.message.reply_text("👥 Abhi tak koi extra Co-Admin nahi banaya gaya hai.")
-        return
-    msg = "👑 **Current Authorized Co-Admins:**\n\n"
-    for idx, co in enumerate(co_list, 1):
-        msg += f"{idx}. ID: `{co['user_id']}`\n"
-    await update.message.reply_text(msg, parse_mode="Markdown")
+        msg += "👥 Abhi tak koi Co-Admin nahi banaya gaya hai.\n👉 Naya co-admin jodne ke liye text field me unka User ID type karke send karein."
+    else:
+        msg += "Current Active Co-Admins (Click to remove):\n"
+        for co in co_list:
+            keyboard.append([InlineKeyboardButton(f"❌ Remove: {co['user_id']}", callback_data=f"remco_{co['user_id']}")])
+    
+    keyboard.append([InlineKeyboardButton("🏠 Admin Dashboard", callback_data="admin_home")])
+    if is_edit:
+        await message_obj.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    else:
+        await message_obj.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders administrative operations dashboard for primary & co-admins."""
+    """Renders administrative operations dashboard."""
     if not is_admin_or_co_admin(update.effective_user.id): return
-    keyboard = [
-        [InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")],
-        [InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
-    ]
-    await update.message.reply_text("👑 *Admin & Contributor Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await show_admin_dashboard(update.message, update.effective_user.id, is_edit=False)
+
+async def show_admin_dashboard(message_obj, user_id, is_edit=True):
+    keyboard = []
+    
+    # Co-Admin Only Sees Content Management
+    if user_id != ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")])
+        keyboard.append([InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")])
+        text = "⚙️ *Contributor Control Panel:*"
+    else:
+        # Super Admin Controls Everything
+        keyboard.append([InlineKeyboardButton("📂 Manage Content & Categories", callback_data="manage_files")])
+        keyboard.append([InlineKeyboardButton("👥 Manage Co-Admins", callback_data="admin_coadmins")])
+        keyboard.append([InlineKeyboardButton("🛠️ Manage Dynamic Buttons", callback_data="manage_dyn_buttons")])
+        keyboard.append([InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")])
+        text = "👑 *Main Super Admin Panel:*"
+
+    if is_edit:
+        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    else:
+        await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def manage_files_list(query):
     """Lists files inside admin interface."""
     files = list(material_col.find({}))
+    keyboard = []
+    
+    if query.from_user.id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("➕ Add New Category", callback_data="add_new_category")])
+        
     if not files:
-        await query.edit_message_text("🗂️ Database khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")]]))
+        keyboard.append([InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")])
+        await query.edit_message_text("🗂️ Database khali hai.", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    keyboard = []
     for f in files:
         status_icon = "🟢" if f.get("status", "live") == "live" else "🔴"
         keyboard.append([InlineKeyboardButton(f"{status_icon} [{f['category']}-{f.get('subject','General')}] {f['file_name']}", callback_data=f"editfile_{f['_id']}")])
@@ -282,11 +321,15 @@ async def edit_file_options(query, file_id):
     toggle_text = "🔴 Hide From Users" if current_status == "live" else "🟢 Make It Live"
     
     keyboard = [
-        [InlineKeyboardButton(toggle_text, callback_data=f"toggle_{file_id}")],
-        [InlineKeyboardButton("📦 Transfer File", callback_data=f"move_{file_id}"), InlineKeyboardButton("👯 Copy File", callback_data=f"copy_{file_id}")],
-        [InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del_{file_id}")],
-        [InlineKeyboardButton("🔙 Back to List", callback_data="manage_files")]
+        [InlineKeyboardButton(toggle_text, callback_data=f"toggle_{file_id}")]
     ]
+    
+    # Restrict Advanced actions to Super Admin Only
+    if query.from_user.id == ADMIN_ID:
+        keyboard.append([InlineKeyboardButton("📦 Transfer File", callback_data=f"move_{file_id}"), InlineKeyboardButton("👯 Copy File", callback_data=f"copy_{file_id}")])
+        keyboard.append([InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del_{file_id}")])
+        
+    keyboard.append([InlineKeyboardButton("🔙 Back to List", callback_data="manage_files")])
     await query.edit_message_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 # ==========================================
@@ -310,33 +353,66 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "go_home":
             await show_main_menu(query.message, query.from_user.first_name, is_edit=True)
 
-        elif query.data == "more_channels":
-            keyboard = [
-                [InlineKeyboardButton("📢 Join Update Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")]
-            ]
-            await query.edit_message_text(
-                "📢 **Hamare Dusre Channels & Groups:**\n\n"
-                "Niche diye gaye links ko join karke aap daily quizzes, important announcements aur direct discussion group se jud sakte hain. Check out now! 👇",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode="Markdown"
+        elif query.data == "user_req_file":
+            user_states[user_id] = "waiting_for_request"
+            await query.message.reply_text(
+                "📝 **Aapko kaunse extra notes ya study material chahiye?**\n\n"
+                "Kripya us book, subject ya notes ka naam niche type karke send karein. Aapki request seedhe Admin panel tak pahunchayi jayegi!",
+                parse_mode='Markdown'
             )
 
-        elif query.data == "more_bots":
-            keyboard = [
-                [InlineKeyboardButton("🤖 Main Study Bot", url=f"https://t.me/{context.bot.username}")],
-                [InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")]
-            ]
+        elif query.data == "more_combined":
+            # Highly Custom dynamic button listing for links managed by Super Admin
+            buttons = list(dynamic_buttons_col.find({}))
+            keyboard = []
+            for btn in buttons:
+                keyboard.append([InlineKeyboardButton(f"{btn['emoji']} {btn['name']}", url=btn['url'])])
+            keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")])
             await query.edit_message_text(
-                "🤖 **Hamare Future AI & Automation Bots:**\n\n"
-                "Aane wale samay me hum aur bhi behtareen tools (Jaise Quiz Bots, Automated Doubt Solvers, aur Custom AI Assistants) launch karne wale hain. Un sabki direct list aapko yahan dekhne ko milegi! Stay tuned! 🔥",
+                "✨ **Explore More Channels & Smart Bots:** ✨\n\n"
+                "Niche diye gaye verified links ke throug extra study content, automated groups aur extra tools explore karein! 👇",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
 
         elif query.data == "admin_home" and is_admin_or_co_admin(user_id):
-            keyboard = [[InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")], [InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]]
-            await query.edit_message_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            admin_states.pop(user_id, None)
+            await show_admin_dashboard(query.message, user_id, is_edit=True)
+
+        elif query.data == "admin_coadmins" and user_id == ADMIN_ID:
+            await show_co_admins_panel(query.message, is_edit=True)
+
+        elif query.data.startswith("remco_") and user_id == ADMIN_ID:
+            co_to_rem = int(query.data.replace("remco_", ""))
+            co_admins_col.delete_one({"user_id": co_to_rem})
+            await show_co_admins_panel(query.message, is_edit=True)
+
+        elif query.data == "add_new_category" and user_id == ADMIN_ID:
+            admin_states[user_id] = {"action": "waiting_for_cat_name"}
+            await query.edit_message_text("📝 **Nayi category ka naam type karke bhejein:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="manage_files")]]))
+
+        elif query.data == "manage_dyn_buttons" and user_id == ADMIN_ID:
+            buttons = list(dynamic_buttons_col.find({}))
+            keyboard = [[InlineKeyboardButton("➕ Add New Button", callback_data="add_dyn_btn")]]
+            for btn in buttons:
+                keyboard.append([InlineKeyboardButton(f"🗑️ Delete: {btn['name']}", callback_data=f"deldbtn_{btn['_id']}")])
+            keyboard.append([InlineKeyboardButton("🏠 Admin Dashboard", callback_data="admin_home")])
+            await query.edit_message_text("🛠️ **Dynamic Buttons Configuration Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+        elif query.data == "add_dyn_btn" and user_id == ADMIN_ID:
+            admin_states[user_id] = {"action": "waiting_btn_name"}
+            await query.edit_message_text("📛 **Naye button ka Text (Naam) enter karein:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="manage_dyn_buttons")]]))
+
+        elif query.data.startswith("deldbtn_") and user_id == ADMIN_ID:
+            bid = query.data.replace("deldbtn_", "")
+            dynamic_buttons_col.delete_one({"_id": ObjectId(bid)})
+            # Re-render dynamic buttons panel
+            buttons = list(dynamic_buttons_col.find({}))
+            keyboard = [[InlineKeyboardButton("➕ Add New Button", callback_data="add_dyn_btn")]]
+            for btn in buttons:
+                keyboard.append([InlineKeyboardButton(f"🗑️ Delete: {btn['name']}", callback_data=f"deldbtn_{btn['_id']}")])
+            keyboard.append([InlineKeyboardButton("🏠 Admin Dashboard", callback_data="admin_home")])
+            await query.edit_message_text("🛠️ **Dynamic Buttons Configuration Panel:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data == "manage_files" and is_admin_or_co_admin(user_id):
             await manage_files_list(query)
@@ -353,21 +429,29 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 material_col.update_one({"_id": ObjectId(fid)}, {"$set": {"status": nst}})
                 await edit_file_options(query, fid)
 
-        elif query.data.startswith("del_") and is_admin_or_co_admin(user_id):
+        elif query.data.startswith("del_") and user_id == ADMIN_ID:
             fid = query.data.replace("del_", "")
             material_col.delete_one({"_id": ObjectId(fid)})
             await manage_files_list(query)
 
-        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and is_admin_or_co_admin(user_id):
+        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and user_id == ADMIN_ID:
             mode, fid = query.data.split("_", 1)
             admin_states[user_id] = {"action": mode, "fid": fid}
-            keyboard = [
-                [InlineKeyboardButton("📚 SSC", callback_data="tcat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="tcat_UPSC")],
-                [InlineKeyboardButton("💻 Banking", callback_data="tcat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="tcat_NEET_JEE")]
-            ]
-            await query.edit_message_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            
+            # Fetch global categories to populate dynamically
+            categories = material_col.distinct("category")
+            if not categories: categories = ["SSC", "UPSC", "Banking", "NEET_JEE"]
+            
+            keyboard = []
+            for i in range(0, len(categories), 2):
+                row = [InlineKeyboardButton(f"📂 {categories[i]}", callback_data=f"tcat_{categories[i]}")]
+                if i+1 < len(categories):
+                    row.append(InlineKeyboardButton(f"📂 {categories[i+1]}", callback_data=f"tcat_{categories[i+1]}"))
+                keyboard.append(row)
+                
+            await query.edit_message_text("Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tcat_") and is_admin_or_co_admin(user_id):
+        elif query.data.startswith("tcat_") and user_id == ADMIN_ID:
             tcat = query.data.replace("tcat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["target_cat"] = tcat
@@ -377,7 +461,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 await query.edit_message_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tsub_") and is_admin_or_co_admin(user_id):
+        elif query.data.startswith("tsub_") and user_id == ADMIN_ID:
             tsub = query.data.replace("tsub_", "")
             state = admin_states.get(user_id)
             if state:
@@ -488,26 +572,91 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     if file_id:
         admin_states[user_id] = {"file_id": file_id, "file_name": file_name, "file_type": file_type}
-        keyboard = [
-            [InlineKeyboardButton("📚 SSC", callback_data="acat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="acat_UPSC")],
-            [InlineKeyboardButton("💻 Banking", callback_data="acat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="acat_NEET_JEE")]
-        ]
+        
+        # Pull global live categories dynamically
+        categories = material_col.distinct("category")
+        if not categories: categories = ["SSC", "UPSC", "Banking", "NEET_JEE"]
+        
+        keyboard = []
+        for i in range(0, len(categories), 2):
+            row = [InlineKeyboardButton(f"📂 {categories[i]}", callback_data=f"acat_{categories[i]}")]
+            if i+1 < len(categories):
+                row.append(InlineKeyboardButton(f"📂 {categories[i+1]}", callback_data=f"acat_{categories[i+1]}"))
+            keyboard.append(row)
+            
         await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_user_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles incoming text queries; routes safely between material requests and standard lookups."""
+    """Handles incoming text queries; captures dynamic administrative text parameters safely."""
     user_id = update.effective_user.id
-    if not await is_subscribed(context.bot, user_id): return
-    
     incoming_text = update.message.text
     if incoming_text.startswith("/"): return 
 
-    # Route 1: If the user is currently in a conversation flow trying to type out a manual request
+    # Administrative Text Capture Routing
+    if is_admin_or_co_admin(user_id) and user_id in admin_states:
+        state = admin_states[user_id]
+        
+        if state.get("action") == "waiting_for_cat_name" and user_id == ADMIN_ID:
+            # Seed the database with a dummy live content object to reserve this category instantly
+            dummy_data = {
+                "category": incoming_text,
+                "subject": "General",
+                "file_name": "Category Initialized",
+                "file_id": "",
+                "file_type": "document",
+                "status": "hidden"
+            }
+            material_col.insert_one(dummy_data)
+            admin_states.pop(user_id, None)
+            await update.message.reply_text(f"📂 Nayi category **'{incoming_text}'** successfully initialize ho gayi hai!")
+            return
+
+        elif state.get("action") == "waiting_btn_name" and user_id == ADMIN_ID:
+            state["name"] = incoming_text
+            state["action"] = "waiting_btn_url"
+            await update.message.reply_text(f"🔗 Button text registered as *{incoming_text}*.\n👉 Ab is space down me redirection target **URL (Link)** text paste karke send karein:")
+            return
+
+        elif state.get("action") == "waiting_btn_url" and user_id == ADMIN_ID:
+            if not incoming_text.startswith("http://") and not incoming_text.startswith("https://"):
+                await update.message.reply_text("❌ Please enter a valid URL scheme starting with http:// or https://")
+                return
+            state["url"] = incoming_text
+            state["action"] = "waiting_btn_emoji"
+            await update.message.reply_text("🎭 **Is button ke liye koi ek Single Emoji send karein:**\n(Example: 📢, 🤖, 🧪)")
+            return
+
+        elif state.get("action") == "waiting_btn_emoji" and user_id == ADMIN_ID:
+            emoji = incoming_text.strip()
+            new_btn = {
+                "name": state["name"],
+                "url": state["url"],
+                "emoji": emoji
+            }
+            dynamic_buttons_col.insert_one(new_btn)
+            admin_states.pop(user_id, None)
+            await update.message.reply_text("✅ **Dynamic Multi-Channel Link Button successfully saved!**\nAb yeh user interface panel me automatically show hone lagega.")
+            return
+
+    # Treat as structural text addition to Co-Admin list if main admin uses dashboard scope
+    if user_id == ADMIN_ID and incoming_text.isdigit():
+        co_id = int(incoming_text)
+        if not co_admins_col.find_one({"user_id": co_id}):
+            co_admins_col.insert_one({"user_id": co_id})
+            await update.message.reply_text(f"✅ User ID `{co_id}` saved as Co-Admin!")
+            await show_co_admins_panel(update.message, is_edit=False)
+        else:
+            await update.message.reply_text("⚠️ Yeh ID pehle se hi Co-Admin list me active hai.")
+        return
+
+    # Standard Subscriber Handling Verification Barrier
+    if not await is_subscribed(context.bot, user_id): return
+
     if user_states.get(user_id) == "waiting_for_request":
         await process_and_send_request(update, context, user_id, incoming_text)
         return
 
-    # Route 2: Standard Material Search Query Processing
+    # Standard Material Search Query Processing
     results = list(material_col.find({"file_name": {"$regex": incoming_text, "$options": "i"}, "status": "live"}))
     count = len(results)
     
@@ -557,7 +706,7 @@ def main():
     app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("request", request_file))
     
-    # Primary Admin Exclusive Management Commands
+    # Administrative Exclusive Management Commands
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("addcoadmin", add_co_admin))
