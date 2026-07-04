@@ -298,6 +298,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error handling button click callback: {e}", exc_info=True)
 
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a broadcast message to all users."""
     if update.effective_user.id != ADMIN_ID: return
     if not context.args: return
     broadcast_text = update.message.text.split(None, 1)[1]
@@ -359,15 +360,17 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
             else:
-                await update.message.reply_text("❌ Yeh file ab available nahi hai ya hide kar di gayi hai.")
+                await update.message.reply_text("❌ Yeh file ab available nahi hai ya hide kar di gayi है.")
         except Exception as e:
             logger.error(f"Error handling direct file link: {e}")
             await update.message.reply_text("❌ Invalid File ID.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs unexpected exceptions."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 def main():
+    """Starts the bot."""
     app = Application.builder().token(BOT_TOKEN).post_init(setup_menus).build()
 
     # Handlers Mapping with Structured Priorities
