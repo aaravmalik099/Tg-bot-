@@ -228,7 +228,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 orig_file = material_col.find_one({"_id": ObjectId(state["fid"])})
                 if orig_file:
                     if state["action"] == "move":
-                        material_col.update_one({"_id": ObjectId(state["fid"])}, {"$set": {"category": state["target_cat"], "subject": tsub}})
+                        material_col.update_one({"_id": ObjectId(state["fid"])}, {"$set": {"category": state["target_cat"], "subject": tsub, "status": "live"}})
                     elif state["action"] == "copy":
                         new_doc = orig_file.copy()
                         del new_doc["_id"]
