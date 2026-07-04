@@ -96,7 +96,8 @@ async def show_main_menu(message_obj, name, is_edit=True):
     ]
     text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain!"
     if is_edit:
-        await message_obj.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        # FIXED: Changed edit_message_text to edit_text for Message object
+        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
@@ -110,13 +111,15 @@ async def show_categories_menu(message_obj, is_edit=True):
     if not categories:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
         msg = "🗂️ Abhi tak koi category nahi banayi gayi hai."
-        if is_edit: await message_obj.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        # FIXED: Changed edit_message_text to edit_text for Message object
+        if is_edit: await message_obj.edit_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         else: await message_obj.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return
     
     keyboard = [[InlineKeyboardButton(f"📂 {cat}", callback_data=f"vcat_{cat}")] for cat in categories]
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")])
-    if is_edit: await message_obj.edit_message_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
+    # FIXED: Changed edit_message_text to edit_text for Message object
+    if is_edit: await message_obj.edit_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -183,11 +186,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await manage_files_list(query)
 
         elif query.data.startswith("editfile_") and user_id == ADMIN_ID:
-            fid = query.data.split("_")[1]
+            fid = query.data.replace("editfile_", "")
             await edit_file_options(query, fid)
 
         elif query.data.startswith("toggle_") and user_id == ADMIN_ID:
-            fid = query.data.split("_")[1]
+            fid = query.data.replace("toggle_", "")
             f = material_col.find_one({"_id": ObjectId(fid)})
             if f:
                 nst = "hidden" if f.get("status", "live") == "live" else "live"
@@ -195,12 +198,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await edit_file_options(query, fid)
 
         elif query.data.startswith("del_") and user_id == ADMIN_ID:
-            fid = query.data.split("_")[1]
+            fid = query.data.replace("del_", "")
             material_col.delete_one({"_id": ObjectId(fid)})
             await manage_files_list(query)
 
         elif (query.data.startswith("move_") or query.data.startswith("copy_")) and user_id == ADMIN_ID:
-            mode, fid = query.data.split("_")
+            mode, fid = query.data.split("_", 1)
             admin_states[user_id] = {"action": mode, "fid": fid}
             keyboard = [
                 [InlineKeyboardButton("📚 SSC", callback_data="tcat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="tcat_UPSC")],
@@ -209,7 +212,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("tcat_") and user_id == ADMIN_ID:
-            tcat = query.data.split("_")[1]
+            tcat = query.data.replace("tcat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["target_cat"] = tcat
                 keyboard = [
@@ -219,7 +222,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("tsub_") and user_id == ADMIN_ID:
-            tsub = query.data.split("_")[1]
+            tsub = query.data.replace("tsub_", "")
             state = admin_states.get(user_id)
             if state:
                 orig_file = material_col.find_one({"_id": ObjectId(state["fid"])})
@@ -269,7 +272,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(f"📚 *{cat_name} ➡️ {sub_name}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data.startswith("sfile_"):
-            fid = query.data.split("_")[1]
+            fid = query.data.replace("sfile_", "")
             file_data = material_col.find_one({"_id": ObjectId(fid)})
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
@@ -360,7 +363,7 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
             else:
-                await update.message.reply_text("❌ Yeh file ab available nahi hai ya hide kar di gayi है.")
+                await update.message.reply_text("❌ Yeh file ab available nahi hai ya hide kar di gayi hai.")
         except Exception as e:
             logger.error(f"Error handling direct file link: {e}")
             await update.message.reply_text("❌ Invalid File ID.")
