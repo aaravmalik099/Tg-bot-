@@ -445,7 +445,7 @@ def main():
     app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
-    app.add_handler(CommandHandler("request", request_file))
+    #app.add_handler(CommandHandler("request", request_file))
     
     # Callback Query Handler
     app.add_handler(CallbackQueryHandler(button_click))
