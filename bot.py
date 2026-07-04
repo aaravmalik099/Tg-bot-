@@ -32,6 +32,7 @@ users_col = db['users']
 material_col = db['materials']
 co_admins_col = db['co_admins']  # New collection to persist multi-user upload permissions
 dynamic_buttons_col = db['dynamic_buttons']  # Super Admin custom channels/bots buttons
+requests_col = db['user_requests']  # New collection to track user file requests
 
 # State Memory for Actions & Conversations
 admin_states = {}
@@ -56,7 +57,7 @@ def is_admin_or_co_admin(user_id):
     return co_admins_col.find_one({"user_id": user_id}) is not None
 
 async def send_material_file(bot, chat_id, file_data):
-    """Dispatches saved media or documents securely to users."""
+    """Dispatches saved media or documents securely to users and tracks analytics."""
     try:
         if file_data["file_type"] == "document":
             await bot.send_document(chat_id=chat_id, document=file_data["file_id"], caption=file_data["file_name"])
@@ -64,6 +65,12 @@ async def send_material_file(bot, chat_id, file_data):
             await bot.send_photo(chat_id=chat_id, photo=file_data["file_id"], caption=file_data["file_name"])
         elif file_data["file_type"] == "video":
             await bot.send_video(chat_id=chat_id, video=file_data["file_id"], caption=file_data["file_name"])
+        
+        # Track history: Add file to user's downloaded files history if not already present
+        users_col.update_one(
+            {"user_id": chat_id},
+            {"$addToSet": {"downloaded_files": {"file_id": str(file_data["_id"]), "file_name": file_data["file_name"]}}}
+        )
     except Exception as e:
         logger.error(f"Error sending file: {e}")
 
@@ -103,14 +110,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = user.id
     
     if not users_col.find_one({"user_id": user_id}):
-        users_col.insert_one({"user_id": user_id, "username": user.username, "name": user.first_name})
+        users_col.insert_one({"user_id": user_id, "username": user.username, "name": user.first_name, "downloaded_files": []})
 
     if not await is_subscribed(context.bot, user_id):
         keyboard = [
             [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}")],
             [InlineKeyboardButton("🔄 Verify Me", callback_data="verify")]
         ]
-        await update.message.reply_text("Pepehle upar diye channel ko join karein!", reply_markup=InlineKeyboardMarkup(keyboard))
+        await update.message.reply_text("Pehle upar diye channel ko join karein!", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     await show_main_menu(update.message, user.first_name, is_edit=False)
@@ -120,7 +127,7 @@ async def show_main_menu(message_obj, name, is_edit=True):
     keyboard = [
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
         [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")],
-        [InlineKeyboardButton("📥 Request Files", callback_data="user_req_file")],
+        [InlineKeyboardButton("📥 Request Files", callback_data="user_req_menu")],
         [InlineKeyboardButton("✨ More Buttons ✨", callback_data="more_combined")]
     ]
     
@@ -185,24 +192,31 @@ async def process_and_send_request(update, context, user_id, file_request_name):
     user_info = f"{user.first_name} (ID: `{user_id}` | Username: @{user.username or 'None'})"
     
     try:
+        # Save request to database history
+        requests_col.insert_one({
+            "user_id": user_id,
+            "file_name": file_request_name,
+            "status": "pending"
+        })
+
         await context.bot.send_message(
             chat_id=ADMIN_ID,
             text=f"🔔 **[NEW REQUEST RECEIVED]**\n\n👤 **From User:** {user_info}\n📂 **Requested Material:** {file_request_name}\n\n"
                  f"ℹ️ *Aap unhe directly provide kar sakte hain ya database me upload kar sakte hain.*",
             parse_mode='Markdown'
         )
+        
+        success_text = (
+            "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
+            "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍"
+        )
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Request Menu", callback_data="user_req_menu")]]
+        
         if update.callback_query:
-            await update.callback_query.message.reply_text(
-                "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
-                "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
-                parse_mode='Markdown'
-            )
+            await update.callback_query.message.reply_text(success_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         else:
-            await update.message.reply_text(
-                "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
-                "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
-                parse_mode='Markdown'
-            )
+            await update.message.reply_text(success_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         user_states.pop(user_id, None)
     except Exception as e:
         logger.error(f"Error in dispatching request to admin: {e}")
@@ -353,6 +367,21 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "go_home":
             await show_main_menu(query.message, query.from_user.first_name, is_edit=True)
 
+        # NEW SUB-MENU FOR USER REQUESTS
+        elif query.data == "user_req_menu":
+            keyboard = [
+                [InlineKeyboardButton("🆕 Request New File", callback_data="user_req_file")],
+                [InlineKeyboardButton("📂 View Requested Files", callback_data="view_my_requests")],
+                [InlineKeyboardButton("🔙 Back to Dashboard", callback_data="go_home")]
+            ]
+            text = (
+                "📥 **File Request Desk**\n\n"
+                "Aapka swagat hai! Agar aapko dashboard me koi material nahi mila, toh aap direct request daal sakte hain:\n\n"
+                "• **Request New File:** Kisi bhi naye study material ki mang karein.\n"
+                "• **View Requested Files:** Apni abhi tak ki bheji gayi requests ka record check karein."
+            )
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
         elif query.data == "user_req_file":
             user_states[user_id] = "waiting_for_request"
             await query.message.reply_text(
@@ -360,6 +389,21 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Kripya us book, subject ya notes ka naam niche type karke send karein. Aapki request seedhe Admin panel tak pahunchayi jayegi!",
                 parse_mode='Markdown'
             )
+
+        # NEW VIEW REQUEST HISTORY FEATURE
+        elif query.data == "view_my_requests":
+            user_reqs = list(requests_col.find({"user_id": user_id}))
+            keyboard = [[InlineKeyboardButton("🔙 Back to Request Menu", callback_data="user_req_menu")]]
+            
+            if not user_reqs:
+                text = "📂 **Aapne abhi tak koi extra file request nahi ki hai!**"
+            else:
+                text = "📋 **Aapki Requested Files ki list:**\n\n"
+                for index, req in enumerate(user_reqs, 1):
+                    status_emoji = "⏳ Pending" if req.get("status") == "pending" else "✅ Completed"
+                    text += f"{index}. 📂 **{req['file_name']}**\n⚡ Status: `{status_emoji}`\n\n"
+                    
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
 
         elif query.data == "more_combined":
             # Highly Custom dynamic button listing for links managed by Super Admin
@@ -370,7 +414,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")])
             await query.edit_message_text(
                 "✨ **Explore More Channels & Smart Bots:** ✨\n\n"
-                "Niche diye gaye verified links ke throug extra study content, automated groups aur extra tools explore karein! 👇",
+                "Niche diye gaye verified links ke through extra study content, automated groups aur extra tools explore karein! 👇",
                 reply_markup=InlineKeyboardMarkup(keyboard),
                 parse_mode="Markdown"
             )
@@ -484,8 +528,36 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             back = "admin_home" if is_admin_or_co_admin(user_id) else "go_home"
             await query.edit_message_text(f"📊 *Bot Status:*\n\n👥 Users: {total_users}\n📂 Files: {total_files}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=back)]]), parse_mode="Markdown")
 
+        # CLEAN PROFILE DASHBOARD (WITHOUT FLOODING STUFF)
         elif query.data == "my_profile":
-            await query.edit_message_text(f"👤 *Profile:*\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]), parse_mode="Markdown")
+            keyboard = [
+                [InlineKeyboardButton("📥 View Downloaded Files", callback_data="view_my_downloads")],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]
+            ]
+            text = (
+                f"👤 **Your Personal Profile Profile**\n\n"
+                f"📝 **Name:** {query.from_user.first_name}\n"
+                f"🆔 **Telegram ID:** `{user_id}`\n"
+                f"🌐 **Username:** @{query.from_user.username or 'None'}\n\n"
+                f"💡 *Apni sabhi purani download ki hui files dekhne ke liye niche diye gaye button par click karein!*"
+            )
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+        # HIDDEN DOWNLOAD LIST POPUP (TRIGGERED VIA TAP)
+        elif query.data == "view_my_downloads":
+            u_doc = users_col.find_one({"user_id": user_id})
+            downloaded = u_doc.get("downloaded_files", []) if u_doc else []
+            
+            keyboard = []
+            if not downloaded:
+                text = "📥 **Aapne abhi tak bot se koi bhi file download nahi ki hai!**\n\nDashboard se padhai suru karein aur material download karein."
+            else:
+                text = "📂 **Aapki abhi tak download ki gayi saari Files:**\n\n_Niche diye inline buttons par tap karke aap unhe fir se fetch kar sakte hain:_"
+                for file_info in downloaded:
+                    keyboard.append([InlineKeyboardButton(f"📄 {file_info['file_name']}", callback_data=f"sfile_{file_info['file_id']}")])
+            
+            keyboard.append([InlineKeyboardButton("🔙 Back to Profile", callback_data="my_profile")])
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
         elif query.data == "view_cats":
             await show_categories_menu(query.message, is_edit=True)
