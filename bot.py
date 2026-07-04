@@ -6,22 +6,27 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
+# Logging Configuration
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Environment Variables
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URL")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
+# Database Initialization
 client = MongoClient(MONGO_URL)
 db = client['tg_material_bot']
 users_col = db['users']
 material_col = db['materials']
 
+# State Memory for Admin Actions
 admin_states = {}
 
 async def is_subscribed(bot, user_id):
+    """Checks if the user is a member of the mandatory update channel."""
     try:
         member = await bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
         return member.status in ['member', 'administrator', 'creator']
@@ -30,6 +35,7 @@ async def is_subscribed(bot, user_id):
         return False
 
 async def send_material_file(bot, chat_id, file_data):
+    """Dispatches saved media or documents securely to users."""
     try:
         if file_data["file_type"] == "document":
             await bot.send_document(chat_id=chat_id, document=file_data["file_id"], caption=file_data["file_name"])
@@ -40,8 +46,8 @@ async def send_material_file(bot, chat_id, file_data):
     except Exception as e:
         logger.error(f"Error sending file: {e}")
 
-# Setup Menu Buttons based on Admin vs User Dynamic Scope
 async def setup_menus(bot):
+    """Sets role-specific bot command menus dynamically via scopes."""
     try:
         user_commands = [
             ("start", "🚀 Start Bot"),
@@ -63,6 +69,7 @@ async def setup_menus(bot):
         logger.error(f"Error setting menus: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Triggered on /start or /home command."""
     user = update.effective_user
     user_id = user.id
     
@@ -80,6 +87,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update.message, user.first_name, is_edit=False)
 
 async def show_main_menu(message_obj, name, is_edit=True):
+    """Renders the top level dashboard."""
     keyboard = [
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
         [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
@@ -95,6 +103,7 @@ async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_categories_menu(update.message, is_edit=False)
 
 async def show_categories_menu(message_obj, is_edit=True):
+    """Renders all categories dynamically."""
     categories = material_col.distinct("category", {"status": "live"})
     if not categories:
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")]]
@@ -109,6 +118,7 @@ async def show_categories_menu(message_obj, is_edit=True):
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Renders administrative operations dashboard."""
     if update.effective_user.id != ADMIN_ID: return
     keyboard = [
         [InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")],
@@ -117,6 +127,7 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def manage_files_list(query):
+    """Lists files inside admin interface."""
     files = list(material_col.find({}))
     if not files:
         await query.edit_text("🗂️ Database khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")]]))
@@ -130,6 +141,7 @@ async def manage_files_list(query):
     await query.edit_text("📂 *Manage Content (Click to edit):*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def edit_file_options(query, file_id):
+    """Interactive individual settings configuration panel for files."""
     file = material_col.find_one({"_id": ObjectId(file_id)})
     if not file: return
     current_status = file.get("status", "live")
@@ -144,9 +156,12 @@ async def edit_file_options(query, file_id):
     await query.edit_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Central processing module for high-speed callback handling."""
     query = update.callback_query
-    await query.answer()
     user_id = query.from_user.id
+    
+    # Instant query acknowledgment to remove telegram processing delays
+    await query.answer()
 
     if query.data == "verify":
         if await is_subscribed(context.bot, user_id):
@@ -177,7 +192,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         material_col.delete_one({"_id": ObjectId(query.data.split("_")[1])})
         await manage_files_list(query)
 
-    # Transfer / Copy Logic Routing
     elif (query.data.startswith("move_") or query.data.startswith("copy_")) and user_id == ADMIN_ID:
         mode, fid = query.data.split("_")
         admin_states[user_id] = {"action": mode, "fid": fid}
@@ -204,14 +218,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if orig_file:
                 if state["action"] == "move":
                     material_col.update_one({"_id": ObjectId(state["fid"])}, {"$set": {"category": state["target_cat"], "subject": tsub}})
-                    await query.answer("📦 Successfully Moved!")
                 elif state["action"] == "copy":
                     new_doc = orig_file.copy()
                     del new_doc["_id"]
                     new_doc["category"] = state["target_cat"]
                     new_doc["subject"] = tsub
                     material_col.insert_one(new_doc)
-                    await query.answer("👯 Successfully Copied!")
             admin_states.pop(user_id, None)
         await manage_files_list(query)
 
@@ -252,7 +264,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if file_data and file_data.get("status", "live") == "live":
             await send_material_file(context.bot, user_id, file_data)
 
-    # Main Admin Upload
     elif query.data.startswith("admin_cat_") and user_id == ADMIN_ID:
         category = query.data.replace("admin_cat_", "")
         admin_states[user_id]["category"] = category
@@ -285,6 +296,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📢 Broadcast Done!")
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Intercepts and parses file streams dynamically for structured saving."""
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await handle_user_search(update, context)
@@ -328,10 +340,11 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Run dynamic scope menu configuration on startup
+    # Pre-configure user scopes inside event loop on startup
     loop = asyncio.get_event_loop()
     loop.run_until_complete(setup_menus(app.bot))
 
+    # Strict Route Handlers Mapping
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", start))
     app.add_handler(CommandHandler("categories", cmd_categories))
