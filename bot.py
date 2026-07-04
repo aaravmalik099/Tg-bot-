@@ -30,13 +30,13 @@ client = MongoClient(MONGO_URL)
 db = client['tg_material_bot']
 users_col = db['users']
 material_col = db['materials']
-co_admins_col = db['co_admins']  # New collection to persist multi-user upload permissions
-dynamic_buttons_col = db['dynamic_buttons']  # Super Admin custom channels/bots buttons
-user_requests_col = db['user_requests']  # New collection to persist individual file requests tracking
+co_admins_col = db['co_admins']  
+dynamic_buttons_col = db['dynamic_buttons']  
+user_requests_col = db['user_requests']  
 
 # State Memory for Actions & Conversations
 admin_states = {}
-user_states = {}  # Tracks conversational flow like waiting for material request name
+user_states = {}  
 
 # ==========================================
 # SECTION 5: HELPER FUNCTIONS & MIDDLEWARES
@@ -54,7 +54,6 @@ def is_admin_or_co_admin(user_id):
     """Checks if the user is either the main owner or an approved contributor."""
     if int(user_id) == ADMIN_ID:
         return True
-    # Checking both string and integer formats for robust matching
     return co_admins_col.find_one({"user_id": int(user_id)}) is not None or co_admins_col.find_one({"user_id": str(user_id)}) is not None
 
 async def send_material_file(bot, chat_id, file_data):
@@ -119,7 +118,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def show_main_menu(message_obj, name, user_id, is_edit=True):
     """Renders the top level highly polished dashboard."""
-    # Modified Row: Admin sees stats, normal user sees My Files instead of Bot Stats
     if is_admin_or_co_admin(user_id):
         row_two = [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
     else:
@@ -144,7 +142,10 @@ async def show_main_menu(message_obj, name, user_id, is_edit=True):
     )
     
     if is_edit:
-        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        try:
+            await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except Exception:
+            await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
         await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -171,7 +172,7 @@ async def show_categories_menu(message_obj, is_edit=True):
 # SECTION 7: USER CONVERSATIONAL REQUEST SYSTEM
 # ==========================================
 async def show_requests_submenu(query):
-    """Renders a dedicated clean menu for File Requests instead of messing up the main dashboard."""
+    """Renders a dedicated clean menu for File Requests."""
     keyboard = [
         [InlineKeyboardButton("➕ Request New File", callback_data="user_req_file_action")],
         [InlineKeyboardButton("📂 View Requested Files", callback_data="view_my_requests")],
@@ -186,7 +187,7 @@ async def show_requests_submenu(query):
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def show_my_requests_list(query):
-    """Fetches and handles individual user download/request tracking logs interactively."""
+    """Fetches download logs and displays them as active clickable links/buttons."""
     user_id = query.from_user.id
     requests = list(user_requests_col.find({"user_id": user_id}))
     
@@ -194,15 +195,20 @@ async def show_my_requests_list(query):
     if not requests:
         text = "📭 **Aapne abhi tak koi bhi file request ya download nahi ki hai!**\n\nAgar aapko koi material chahiye toh aap 'Request New File' handle ka use kar sakte hain."
     else:
-        text = "📥 **📁 My Downloads & Requests History:**\n\nNiche aapke dwara abhi tak request ya download ki gayi sabhi files ki list hai:\n"
-        for idx, req in enumerate(requests, 1):
-            text += f"\n*{idx}. {req['file_name']}*\n"
+        text = "📥 **📁 My Downloads & Requests History:**\n\nNiche aapकी फ़ाइलों की सूची दी गई है। सीधे डाउनलोड करने के लिए फ़ाइल के नाम वाले बटन पर क्लिक करें:\n"
+        for req in requests:
+            # Check if this file is available in materials database to link with a button
+            mat_file = material_col.find_one({"file_name": req['file_name'], "status": "live"})
+            if mat_file:
+                keyboard.append([InlineKeyboardButton(f"📥 {req['file_name']}", callback_data=f"sfile_{mat_file['_id']}")])
+            else:
+                # Fallback if it was a custom text request or file not uploaded yet
+                keyboard.append([InlineKeyboardButton(f"⏳ {req['file_name']} (Requested)", callback_data="none_click")])
             
     keyboard.append([InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initiates conversation flow or handles direct arguments for admin forwarding."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
 
@@ -219,18 +225,15 @@ async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await process_and_send_request(update, context, user_id, file_request_name)
 
 async def process_and_send_request(update, context, user_id, file_request_name):
-    """Core request processing and dispatching engine to primary admin."""
     user = update.effective_user
     user_info = f"{user.first_name} (ID: `{user_id}` | Username: @{user.username or 'None'})"
     
-    # Save to dynamic history tracking collection securely
     user_requests_col.insert_one({
         "user_id": user_id,
         "file_name": file_request_name
     })
     
     try:
-        # Created dynamic action inline key targeting direct responses instantly
         admin_keyboard = [
             [InlineKeyboardButton("📤 Direct Send File", callback_data=f"dsend_{user_id}")]
         ]
@@ -265,7 +268,6 @@ async def process_and_send_request(update, context, user_id, file_request_name):
 # SECTION 8: ADMINISTRATIVE MANAGEMENT (MULTI-USER SUPPORT)
 # ==========================================
 async def add_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enables primary admin to authorize multiple contributors."""
     if update.effective_user.id != ADMIN_ID: return
     if not context.args:
         await update.message.reply_text("❌ Please provide a Telegram User ID.\nExample: `/addcoadmin 123456789`", parse_mode="Markdown")
@@ -281,7 +283,6 @@ async def add_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid User ID. Kripya sirf digits ka istemal karein.")
 
 async def remove_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Enables primary admin to revoke contributor access instantly."""
     if update.effective_user.id != ADMIN_ID: return
     if not context.args:
         await update.message.reply_text("❌ Please provide a Telegram User ID.\nExample: `/removecoadmin 123456789`", parse_mode="Markdown")
@@ -300,7 +301,6 @@ async def remove_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Invalid User ID format.")
 
 async def list_co_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lists and provides inline control for authorized co-admins/contributors."""
     if update.effective_user.id != ADMIN_ID: return
     await show_co_admins_panel(update.message, is_edit=False)
 
@@ -322,20 +322,18 @@ async def show_co_admins_panel(message_obj, is_edit=True):
         await message_obj.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders administrative operations dashboard."""
     if not is_admin_or_co_admin(update.effective_user.id): return
     await show_admin_dashboard(update.message, update.effective_user.id, is_edit=False)
 
 async def show_admin_dashboard(message_obj, user_id, is_edit=True):
     keyboard = []
     
-    # Co-Admin Only Sees Content Management
+    # Check if Super Admin or Co-Admin
     if int(user_id) != ADMIN_ID:
         keyboard.append([InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")])
         keyboard.append([InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")])
         text = "⚙️ *Contributor Control Panel:*"
     else:
-        # Super Admin Controls Everything
         keyboard.append([InlineKeyboardButton("📂 Manage Content & Categories", callback_data="manage_files")])
         keyboard.append([InlineKeyboardButton("👥 Manage Co-Admins", callback_data="admin_coadmins")])
         keyboard.append([InlineKeyboardButton("🛠️ Manage Dynamic Buttons", callback_data="manage_dyn_buttons")])
@@ -343,16 +341,18 @@ async def show_admin_dashboard(message_obj, user_id, is_edit=True):
         text = "👑 *Main Super Admin Panel:*"
 
     if is_edit:
-        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        try:
+            await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        except Exception:
+            await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
         await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def manage_files_list(query):
-    """Lists files inside admin interface."""
     files = list(material_col.find({}))
     keyboard = []
     
-    if int(query.from_user.id) == ADMIN_ID:
+    if is_admin_or_co_admin(query.from_user.id):
         keyboard.append([InlineKeyboardButton("➕ Add New Category", callback_data="add_new_category")])
         
     if not files:
@@ -367,7 +367,6 @@ async def manage_files_list(query):
     await query.edit_message_text("📂 *Manage Content (Click to edit):*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def edit_file_options(query, file_id):
-    """Interactive individual settings configuration panel for files."""
     file = material_col.find_one({"_id": ObjectId(file_id)})
     if not file: return
     current_status = file.get("status", "live")
@@ -377,8 +376,8 @@ async def edit_file_options(query, file_id):
         [InlineKeyboardButton(toggle_text, callback_data=f"toggle_{file_id}")]
     ]
     
-    # Restrict Advanced actions to Super Admin Only
-    if int(query.from_user.id) == ADMIN_ID:
+    # Access permitted to both Super Admin and Co-Admins
+    if is_admin_or_co_admin(query.from_user.id):
         keyboard.append([InlineKeyboardButton("📦 Transfer File", callback_data=f"move_{file_id}"), InlineKeyboardButton("👯 Copy File", callback_data=f"copy_{file_id}")])
         keyboard.append([InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del_{file_id}")])
         
@@ -389,13 +388,15 @@ async def edit_file_options(query, file_id):
 # SECTION 9: INLINE CALLBACK ENGINE
 # ==========================================
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Central processing module for high-speed callback handling."""
     query = update.callback_query
     user_id = query.from_user.id
     
     await query.answer()
 
     try:
+        if query.data == "none_click":
+            return
+
         if query.data == "verify":
             if await is_subscribed(context.bot, user_id):
                 try:
@@ -404,6 +405,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await show_main_menu(query.message, query.from_user.first_name, user_id, is_edit=False)
 
         elif query.data == "go_home":
+            # Direct text editing to avoid scrolling up issues
             await show_main_menu(query.message, query.from_user.first_name, user_id, is_edit=True)
 
         elif query.data == "req_files_menu":
@@ -421,7 +423,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
         elif query.data == "more_combined":
-            # Highly Custom dynamic button listing for links managed by Super Admin
             buttons = list(dynamic_buttons_col.find({}))
             keyboard = []
             for btn in buttons:
@@ -447,7 +448,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             co_admins_col.delete_one({"user_id": int(co_to_rem) if co_to_rem.isdigit() else co_to_rem})
             await show_co_admins_panel(query.message, is_edit=True)
 
-        elif query.data == "add_new_category" and int(user_id) == ADMIN_ID:
+        elif query.data == "add_new_category" and is_admin_or_co_admin(user_id):
             admin_states[user_id] = {"action": "waiting_for_cat_name"}
             await query.edit_message_text("📝 **Nayi category ka naam type karke bhejein:**", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Cancel", callback_data="manage_files")]]))
 
@@ -466,7 +467,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data.startswith("deldbtn_") and int(user_id) == ADMIN_ID:
             bid = query.data.replace("deldbtn_", "")
             dynamic_buttons_col.delete_one({"_id": ObjectId(bid)})
-            # Re-render dynamic buttons panel
             buttons = list(dynamic_buttons_col.find({}))
             keyboard = [[InlineKeyboardButton("➕ Add New Button", callback_data="add_dyn_btn")]]
             for btn in buttons:
@@ -489,13 +489,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 material_col.update_one({"_id": ObjectId(fid)}, {"$set": {"status": nst}})
                 await edit_file_options(query, fid)
 
-        elif query.data.startswith("del_") and int(user_id) == ADMIN_ID:
+        elif query.data.startswith("del_") and is_admin_or_co_admin(user_id):
             fid = query.data.replace("del_", "")
             material_col.delete_one({"_id": ObjectId(fid)})
             await manage_files_list(query)
 
         elif query.data.startswith("dsend_") and is_admin_or_co_admin(user_id):
-            # Capture dynamic payload data for direct individual routing mapping
             target_user_id = int(query.data.replace("dsend_", ""))
             admin_states[user_id] = {"action": "direct_send_mode", "target_user": target_user_id}
             
@@ -507,11 +506,10 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown"
             )
 
-        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and int(user_id) == ADMIN_ID:
+        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and is_admin_or_co_admin(user_id):
             mode, fid = query.data.split("_", 1)
             admin_states[user_id] = {"action": mode, "fid": fid}
             
-            # Fetch global categories to populate dynamically
             categories = material_col.distinct("category")
             if not categories: categories = ["SSC", "UPSC", "Banking", "NEET_JEE"]
             
@@ -524,7 +522,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 
             await query.edit_message_text("Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tcat_") and int(user_id) == ADMIN_ID:
+        elif query.data.startswith("tcat_") and is_admin_or_co_admin(user_id):
             tcat = query.data.replace("tcat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["target_cat"] = tcat
@@ -534,7 +532,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 await query.edit_message_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tsub_") and int(user_id) == ADMIN_ID:
+        elif query.data.startswith("tsub_") and is_admin_or_co_admin(user_id):
             tsub = query.data.replace("tsub_", "")
             state = admin_states.get(user_id)
             if state:
@@ -591,7 +589,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
 
-                # Track download history under user requests collection as well
                 if not user_requests_col.find_one({"user_id": user_id, "file_name": file_data['file_name']}):
                     user_requests_col.insert_one({
                         "user_id": user_id,
@@ -625,8 +622,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SECTION 10: COMMUNICATIONS & SYSTEM LOGIC
 # ==========================================
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a broadcast message to all users (Strictly Main Admin only)."""
-    if int(update.effective_user.id) != ADMIN_ID: return
+    if not is_admin_or_co_admin(update.effective_user.id): return
     if not context.args: return
     broadcast_text = update.message.text.split(None, 1)[1]
     all_users = users_col.find({})
@@ -638,7 +634,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📢 Broadcast Done!")
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Intercepts media documents specifically for authorized admin/co-admin upload streams."""
     user_id = update.effective_user.id
     if not is_admin_or_co_admin(user_id): return
     
@@ -652,19 +647,16 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         file_id, file_name, file_type = message.video.file_id, message.video.file_name or message.caption or "Video Note", "video"
 
     if file_id:
-        # Check if the active administrator conversation is structural direct sender logic routing
         if user_id in admin_states and admin_states[user_id].get("action") == "direct_send_mode":
             target_chat = admin_states[user_id]["target_user"]
             try:
-                # Dispatched individual files explicitly without injecting database configurations
                 dummy_file_doc = {"file_id": file_id, "file_name": file_name, "file_type": file_type}
                 await send_material_file(context.bot, target_chat, dummy_file_doc)
                 
-                # Dynamic tracking logs persistence
-                user_requests_col.insert_one({"user_id": target_chat, "file_name": f"[Direct Sent] {file_name}"})
+                user_requests_col.insert_one({"user_id": target_chat, "file_name": file_name})
                 
                 await message.reply_text(f"🚀 **Safalta-purbak deliver ho gayi!** File bina kisi category ke seedhe User (ID: `{target_chat}`) tak pahunch gayi hai.")
-                admin_states.pop(user_id, None) # Clear out temporary routing status state tracking mapping
+                admin_states.pop(user_id, None) 
             except Exception as e:
                 logger.error(f"Error in fast direct delivery structure channel: {e}")
                 await message.reply_text("❌ User tak file deliver karne me error aayi. Confirm kijiye ki user ne bot ko start kiya hua hai.")
@@ -672,7 +664,6 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         admin_states[user_id] = {"file_id": file_id, "file_name": file_name, "file_type": file_type}
         
-        # Pull global live categories dynamically
         categories = material_col.distinct("category")
         if not categories: categories = ["SSC", "UPSC", "Banking", "NEET_JEE"]
         
@@ -686,17 +677,14 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def handle_user_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles incoming text queries; captures dynamic administrative text parameters safely."""
     user_id = update.effective_user.id
     incoming_text = update.message.text
     if incoming_text.startswith("/"): return 
 
-    # Administrative Text Capture Routing
     if is_admin_or_co_admin(user_id) and user_id in admin_states:
         state = admin_states[user_id]
         
-        if state.get("action") == "waiting_for_cat_name" and int(user_id) == ADMIN_ID:
-            # Seed the database with a dummy live content object to reserve this category instantly
+        if state.get("action") == "waiting_for_cat_name":
             dummy_data = {
                 "category": incoming_text,
                 "subject": "General",
@@ -737,7 +725,6 @@ async def handle_user_incoming_messages(update: Update, context: ContextTypes.DE
             await update.message.reply_text("✅ **Dynamic Multi-Channel Link Button successfully saved!**\nAb yeh user interface panel me automatically show hone lagega.")
             return
 
-    # Treat as structural text addition to Co-Admin list if main admin uses dashboard scope
     if int(user_id) == ADMIN_ID and incoming_text.isdigit():
         co_id = int(incoming_text)
         if not co_admins_col.find_one({"user_id": co_id}) and not co_admins_col.find_one({"user_id": str(co_id)}):
@@ -748,14 +735,12 @@ async def handle_user_incoming_messages(update: Update, context: ContextTypes.DE
             await update.message.reply_text("⚠️ Yeh ID pehle se hi Co-Admin list me active hai.")
         return
 
-    # Standard Subscriber Handling Verification Barrier
     if not await is_subscribed(context.bot, user_id): return
 
     if user_states.get(user_id) == "waiting_for_request":
         await process_and_send_request(update, context, user_id, incoming_text)
         return
 
-    # Standard Material Search Query Processing
     results = list(material_col.find({"file_name": {"$regex": incoming_text, "$options": "i"}, "status": "live"}))
     count = len(results)
     
@@ -771,7 +756,6 @@ async def handle_user_incoming_messages(update: Update, context: ContextTypes.DE
         await update.message.reply_text(text, parse_mode="Markdown")
 
 async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles direct file links clicked from search results."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
     
@@ -783,7 +767,6 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
                 
-                # Dynamic Logging to Request History upon clicking direct download search targets
                 if not user_requests_col.find_one({"user_id": user_id, "file_name": file_data['file_name']}):
                     user_requests_col.insert_one({
                         "user_id": user_id,
@@ -796,38 +779,30 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid File ID.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Logs unexpected exceptions."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 def main():
-    """Starts the bot application and registers handlers safely."""
     app = Application.builder().token(BOT_TOKEN).post_init(setup_menus).build()
 
-    # User & Core Control Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", start))
     app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("request", request_file))
     
-    # Administrative Exclusive Management Commands
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CommandHandler("addcoadmin", add_co_admin))
     app.add_handler(CommandHandler("removecoadmin", remove_co_admin))
     app.add_handler(CommandHandler("coadmins", list_co_admins))
     
-    # Callback Query Handler
     app.add_handler(CallbackQueryHandler(button_click))
     
-    # Message Handlers mapped accurately via Regex/Filters
     app.add_handler(MessageHandler(filters.Regex(r'^/file_[a-fA-F0-9]{24}$'), handle_file_link))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_incoming_messages))
 
-    # Error Handler
     app.add_error_handler(error_handler)
     
-    # Start Polling
     app.run_polling()
 
 if __name__ == '__main__':
