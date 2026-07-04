@@ -181,7 +181,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "bot_stats":
         total_users = users_col.count_documents({})
         total_files = material_col.count_documents({})
-        # Back home according to user role
         back_target = "admin_home" if user_id == ADMIN_ID else "go_home"
         keyboard = [[InlineKeyboardButton("🏠 Main Menu", callback_data=back_target)]]
         await query.edit_message_text(f"📊 *Bot Live Status:*\n\n👥 Total Users: {total_users}\n📂 Total Files Uploaded: {total_files}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -362,8 +361,19 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
+    # Automatically set menu commands
+    commands = [
+        ("start", "Start the bot"),
+        ("admin", "Open Admin Panel"),
+        ("broadcast", "Send mass message")
+    ]
+    
+    # Run the async function to set menu commands inside main
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.bot.set_my_commands(commands))
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("admin", admin_panel)) # New Admin panel command
+    app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
     app.add_handler(CallbackQueryHandler(button_click))
     
@@ -373,5 +383,5 @@ def main():
 
     app.run_polling()
 
-if __name__ == '__main__':.
+if __name__ == '__main__':
     main()
