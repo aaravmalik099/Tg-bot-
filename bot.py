@@ -1,3 +1,6 @@
+# ==========================================
+# SECTION 1: IMPORTS & MODULES
+# ==========================================
 import os
 import logging
 import asyncio
@@ -6,17 +9,23 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from pymongo import MongoClient
 from bson.objectid import ObjectId
 
-# Logging Configuration
+# ==========================================
+# SECTION 2: LOGGING CONFIGURATION
+# ==========================================
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Environment Variables
+# ==========================================
+# SECTION 3: ENVIRONMENT VARIABLES
+# ==========================================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URL = os.getenv("MONGO_URL")
 CHANNEL_USERNAME = os.getenv("CHANNEL_USERNAME")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 0))
 
-# Database Initialization
+# ==========================================
+# SECTION 4: DATABASE INITIALIZATION
+# ==========================================
 client = MongoClient(MONGO_URL)
 db = client['tg_material_bot']
 users_col = db['users']
@@ -25,6 +34,9 @@ material_col = db['materials']
 # State Memory for Admin Actions
 admin_states = {}
 
+# ==========================================
+# SECTION 5: HELPER FUNCTIONS & MIDDLEWARES
+# ==========================================
 async def is_subscribed(bot, user_id):
     """Checks if the user is a member of the mandatory update channel."""
     try:
@@ -54,7 +66,7 @@ async def setup_menus(application: Application):
             ("start", "🚀 Start Bot"),
             ("categories", "🗂️ View Categories"),
             ("home", "🏠 Main Dashboard"),
-            ("request", "📥 Request Material") # मेनू में रिक्वेस्ट बटन जोड़ा
+            ("request", "📥 Request Material")
         ]
         await bot.set_my_commands(user_commands)
         
@@ -72,6 +84,9 @@ async def setup_menus(application: Application):
     except Exception as e:
         logger.error(f"Error setting menus: {e}")
 
+# ==========================================
+# SECTION 6: USER CORE COMMAND HANDLERS
+# ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Triggered on /start or /home command."""
     user = update.effective_user
@@ -96,7 +111,7 @@ async def show_main_menu(message_obj, name, is_edit=True):
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
         [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
     ]
-    text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain या फिर `/request [नाम]` लिख कर मांग सकते हैं!"
+    text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain ya fir `/request [naam]` likh kar mang sakte hain!"
     if is_edit:
         await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     else:
@@ -122,10 +137,10 @@ async def show_categories_menu(message_obj, is_edit=True):
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# FEATURE: FILE REQUEST HANDLER
+# SECTION 7: USER MATERIAL REQUEST SYSTEM
 # ==========================================
 async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """यूजर की फाइल रिक्वेस्ट सीधे एडमिन तक पहुँचाता है (Safe Connection)"""
+    """Forwards user file request straight to Admin securely."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
 
@@ -153,6 +168,9 @@ async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error in request_file: {e}")
         await update.message.reply_text("❌ Something went wrong. Please try again later.")
 
+# ==========================================
+# SECTION 8: ADMINISTRATIVE MANAGEMENT
+# ==========================================
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Renders administrative operations dashboard."""
     if update.effective_user.id != ADMIN_ID: return
@@ -191,6 +209,9 @@ async def edit_file_options(query, file_id):
     ]
     await query.edit_message_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
+# ==========================================
+# SECTION 9: INLINE CALLBACK ENGINE
+# ==========================================
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Central processing module for high-speed callback handling."""
     query = update.callback_query
@@ -309,4 +330,134 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await send_material_file(context.bot, user_id, file_data)
 
         elif query.data.startswith("acat_") and user_id == ADMIN_ID:
-            category = query.
+            category = query.data.replace("acat_", "")
+            if user_id in admin_states:
+                admin_states[user_id]["category"] = category
+                keyboard = [
+                    [InlineKeyboardButton("📐 Maths", callback_data="asub_Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="asub_GK")],
+                    [InlineKeyboardButton("🧠 Reasoning", callback_data="asub_Reasoning"), InlineKeyboardButton("🔤 English", callback_data="asub_English")]
+                ]
+                await query.edit_message_text(f"Category *{category}* done. Select **Subject**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+        elif query.data.startswith("asub_") and user_id == ADMIN_ID:
+            subject = query.data.replace("asub_", "")
+            file_data = admin_states.get(user_id)
+            if file_data:
+                file_data["subject"] = subject
+                file_data["status"] = "live"
+                material_col.insert_one(file_data)
+                await query.edit_message_text("✅ *Successfully Saved!*", parse_mode="Markdown")
+                admin_states.pop(user_id, None)
+                
+    except Exception as e:
+        logger.error(f"Error handling button click callback: {e}", exc_info=True)
+
+# ==========================================
+# SECTION 10: COMMUNICATIONS & SYSTEM LOGIC
+# ==========================================
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Sends a broadcast message to all users."""
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args: return
+    broadcast_text = update.message.text.split(None, 1)[1]
+    all_users = users_col.find({})
+    for user in all_users:
+        try:
+            await context.bot.send_message(chat_id=user["user_id"], text=broadcast_text)
+            await asyncio.sleep(0.05)
+        except Exception: pass
+    await update.message.reply_text("📢 Broadcast Done!")
+
+async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Intercepts media documents specifically for admin upload streams."""
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID: return
+    
+    message = update.message
+    file_id, file_name, file_type = None, "Unnamed", None
+    if message.document: 
+        file_id, file_name, file_type = message.document.file_id, message.document.file_name, "document"
+    elif message.photo: 
+        file_id, file_name, file_type = message.photo[-1].file_id, message.caption or "Photo Note", "photo"
+    elif message.video: 
+        file_id, file_name, file_type = message.video.file_id, message.video.file_name or message.caption or "Video Note", "video"
+
+    if file_id:
+        admin_states[user_id] = {"file_id": file_id, "file_name": file_name, "file_type": file_type}
+        keyboard = [
+            [InlineKeyboardButton("📚 SSC", callback_data="acat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="acat_UPSC")],
+            [InlineKeyboardButton("💻 Banking", callback_data="acat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="acat_NEET_JEE")]
+        ]
+        await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles text query searches specifically for non-command messages."""
+    user_id = update.effective_user.id
+    if not await is_subscribed(context.bot, user_id): return
+    
+    search_query = update.message.text
+    if search_query.startswith("/"): return 
+
+    results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
+    count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
+    if count == 0:
+        await update.message.reply_text(f"🔍 '{search_query}' ke liye koi live material nahi mila.")
+    else:
+        text = f"🔍 *Search Results ({count}):*\n\n"
+        for mat in results:
+            text += f"🔹 /file_{mat['_id']} - {mat['file_name']} ({mat.get('subject','')})\n"
+        await update.message.reply_text(text, parse_mode="Markdown")
+
+async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles direct file links clicked from search results."""
+    user_id = update.effective_user.id
+    if not await is_subscribed(context.bot, user_id): return
+    
+    msg_text = update.message.text
+    if msg_text.startswith("/file_"):
+        file_id_str = msg_text.replace("/file_", "")
+        try:
+            file_data = material_col.find_one({"_id": ObjectId(file_id_str)})
+            if file_data and file_data.get("status", "live") == "live":
+                await send_material_file(context.bot, user_id, file_data)
+            else:
+                await update.message.reply_text("❌ Yeh file ab available nahi hai ya hide kar di gayi hai.")
+        except Exception as e:
+            logger.error(f"Error handling direct file link: {e}")
+            await update.message.reply_text("❌ Invalid File ID.")
+
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Logs unexpected exceptions."""
+    logger.error("Exception while handling an update:", exc_info=context.error)
+
+# ==========================================
+# SECTION 11: MAIN APPLICATION INITIALIZER
+# ==========================================
+def main():
+    """Starts the bot application and registers handlers safely."""
+    app = Application.builder().token(BOT_TOKEN).post_init(setup_menus).build()
+
+    # Command Handlers
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("home", start))
+    app.add_handler(CommandHandler("categories", cmd_categories))
+    app.add_handler(CommandHandler("admin", admin_panel))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
+    app.add_handler(CommandHandler("request", request_file))
+    
+    # Callback Query Handler
+    app.add_handler(CallbackQueryHandler(button_click))
+    
+    # Message Handlers with correct Filters and Callbacks mapping
+    app.add_handler(MessageHandler(filters.Regex(r'^/file_[a-fA-F0-9]{24}$'), handle_file_link))
+    app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search))
+
+    # Error Handler
+    app.add_error_handler(error_handler)
+    
+    # Start Polling
+    app.run_polling()
+
+if __name__ == '__main__':
+    main()
