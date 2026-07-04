@@ -3,6 +3,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -39,6 +40,15 @@ async def is_subscribed(bot, user_id):
         logger.error(f"Error checking subscription: {e}")
         return False
 
+# Function to safely send stored files
+async def send_material_file(bot, chat_id, file_data):
+    if file_data["file_type"] == "document":
+        await bot.send_document(chat_id=chat_id, document=file_data["file_id"], caption=file_data["file_name"])
+    elif file_data["file_type"] == "photo":
+        await bot.send_photo(chat_id=chat_id, photo=file_data["file_id"], caption=file_data["file_name"])
+    elif file_data["file_type"] == "video":
+        await bot.send_video(chat_id=chat_id, video=file_data["file_id"], caption=file_data["file_name"])
+
 # ==========================================================
 # 👥 USER COMMANDS SECTION (Start, Verify, Main Menu)
 # ==========================================================
@@ -46,11 +56,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     user_id = user.id
     
-    # Save user to database if not exists
     if not users_col.find_one({"user_id": user_id}):
         users_col.insert_one({"user_id": user_id, "username": user.username, "name": user.first_name})
 
-    # Check Force Join
     if not await is_subscribed(context.bot, user_id):
         keyboard = [
             [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}")],
@@ -62,7 +70,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Main Menu
     await show_main_menu(update.message, user.first_name)
 
 async def show_main_menu(message_obj, name):
@@ -77,7 +84,7 @@ async def show_main_menu(message_obj, name):
     )
 
 # ==========================================================
-# 🎛️ CALLBACK QUERY SECTION (Button Clicks)
+# 🎛️ CALLBACK QUERY SECTION (Button Clicks Fixed)
 # ==========================================================
 async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -100,7 +107,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(f"👤 *Aapki Profile:*\n\n📝 Name: {query.from_user.first_name}\n🆔 ID: {user_id}\n🔗 Username: @{query.from_user.username}", parse_mode="Markdown")
 
     elif query.data == "view_cats":
-        # Get unique categories from database
         categories = material_col.distinct("category")
         if not categories:
             await query.message.reply_text("🗂️ Abhi tak koi category nahi banayi gayi hai. Admin jald hi material upload karenge!")
@@ -111,12 +117,31 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif query.data.startswith("cat_"):
         category_name = query.data.split("_")[1]
-        materials = material_col.find({"category": category_name})
+        materials = list(material_col.find({"category": category_name}))
         
-        text = f"📚 *Category: {category_name}* \n\nNiche aapke files hain:\n"
+        if not materials:
+            await query.message.reply_text(f"❌ {category_name} me abhi koi file nahi hai.")
+            return
+
+        # Create inline buttons for each file in that category
+        keyboard = []
         for mat in materials:
-            text += f"🔹 /file_{mat['_id']} - {mat['file_name']}\n"
-        await query.message.reply_text(text, parse_mode="Markdown")
+            keyboard.append([InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sendfile_{mat['_id']}")])
+        
+        keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats")])
+        await query.message.reply_text(f"📚 *Category: {category_name}*\n\nFile download karne ke liye niche button par click karein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+    # Direct File Sending via Button Click
+    elif query.data.startswith("sendfile_"):
+        file_obj_id = query.data.split("_")[1]
+        try:
+            file_data = material_col.find_one({"_id": ObjectId(file_obj_id)})
+            if file_data:
+                await send_material_file(context.bot, user_id, file_data)
+            else:
+                await context.bot.send_message(chat_id=user_id, text="❌ File nahi mili ya delete ho gayi hai.")
+        except Exception as e:
+            logger.error(f"Error sending file via button: {e}")
 
     # Admin Category selection callback during upload
     elif query.data.startswith("admin_cat_"):
@@ -126,7 +151,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if file_data:
             file_data["category"] = category
-            # Save to Database
             inserted = material_col.insert_one(file_data)
             await query.message.reply_text(f"✅ *Success!* File database me save ho gayi.\n\n📂 Category: {category}\n📝 Name: {file_data['file_name']}\n🔢 Short Code: `/file_{inserted.inserted_id}`", parse_mode="Markdown")
             admin_states.pop(user_id, None)
@@ -137,7 +161,6 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
-        # If not admin, treat it as a search query
         await handle_user_search(update, context)
         return
 
@@ -160,14 +183,12 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         file_type = "video"
 
     if file_id:
-        # Store temporary data in state
         admin_states[user_id] = {
             "file_id": file_id,
             "file_name": file_name,
             "file_type": file_type
         }
         
-        # Ask for category
         keyboard = [
             [InlineKeyboardButton("📚 SSC", callback_data="admin_cat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="admin_cat_UPSC")],
             [InlineKeyboardButton("💻 Banking", callback_data="admin_cat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="admin_cat_NEET_JEE")],
@@ -185,33 +206,27 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     
-    # Force Join check before searching
     if not await is_subscribed(context.bot, user_id):
         await start(update, context)
         return
 
     search_query = update.message.text
+    
+    # Text commands for getting file
     if search_query.startswith("/file_"):
-        # Deliver specific file via short code
         try:
-            from bson.objectid import ObjectId
             file_obj_id = search_query.replace("/file_", "")
             file_data = material_col.find_one({"_id": ObjectId(file_obj_id)})
             
             if file_data:
-                if file_data["file_type"] == "document":
-                    await update.message.reply_document(document=file_data["file_id"], caption=file_data["file_name"])
-                elif file_data["file_type"] == "photo":
-                    await update.message.reply_photo(photo=file_data["file_id"], caption=file_data["file_name"])
-                elif file_data["file_type"] == "video":
-                    await update.message.reply_video(video=file_data["file_id"], caption=file_data["file_name"])
+                await send_material_file(context.bot, user_id, file_data)
             else:
                 await update.message.reply_text("❌ File nahi mili ya delete ho gayi hai.")
         except Exception:
             await update.message.reply_text("❌ Invalid File Code.")
         return
 
-    # Global search in file names
+    # Global search
     results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}})
     count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}})
 
@@ -224,22 +239,18 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(text, parse_mode="Markdown")
 
 # ==========================================================
-# 🚀 MAIN APPLICATION APPLICATION START
+# 🚀 MAIN APPLICATION START
 # ==========================================================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
-    # Handlers
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_click))
     
-    # Handle files from admin and text from users
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search))
-    app.add_handler(CommandHandler("file", handle_user_search)) # safety backup
+    app.add_handler(CommandHandler("file", handle_user_search))
 
-    # Run Bot
-    logger.format = "Bot Started Successfully"
     app.run_polling()
 
 if __name__ == '__main__':
