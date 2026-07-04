@@ -109,6 +109,7 @@ async def show_main_menu(message_obj, name, is_edit=True):
     """Renders the top level dashboard."""
     keyboard = [
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
+        [InlineKeyboardButton("📥 Request Material", callback_data="request")],
         [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
     ]
     text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain ya fir `/request [naam]` likh kar mang sakte hain!"
