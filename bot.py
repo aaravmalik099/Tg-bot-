@@ -30,9 +30,11 @@ client = MongoClient(MONGO_URL)
 db = client['tg_material_bot']
 users_col = db['users']
 material_col = db['materials']
+co_admins_col = db['co_admins']  # New collection to persist multi-user upload permissions
 
-# State Memory for Admin Actions
+# State Memory for Actions & Conversations
 admin_states = {}
+user_states = {}  # Tracks conversational flow like waiting for material request name
 
 # ==========================================
 # SECTION 5: HELPER FUNCTIONS & MIDDLEWARES
@@ -45,6 +47,12 @@ async def is_subscribed(bot, user_id):
     except Exception as e:
         logger.error(f"Error checking subscription: {e}")
         return False
+
+def is_admin_or_co_admin(user_id):
+    """Checks if the user is either the main owner or an approved contributor."""
+    if user_id == ADMIN_ID:
+        return True
+    return co_admins_col.find_one({"user_id": user_id}) is not None
 
 async def send_material_file(bot, chat_id, file_data):
     """Dispatches saved media or documents securely to users."""
@@ -63,10 +71,10 @@ async def setup_menus(application: Application):
     bot = application.bot
     try:
         user_commands = [
-            ("start", "🚀 Start Bot"),
+            ("start", "🚀 Start Bot / Dashboard"),
             ("categories", "🗂️ View Categories"),
-            ("home", "🏠 Main Dashboard"),
-            ("request", "📥 Request Material")
+            ("home", "🏠 Main Menu"),
+            ("request", "📥 Request Extra Material")
         ]
         await bot.set_my_commands(user_commands)
         
@@ -77,7 +85,10 @@ async def setup_menus(application: Application):
                 ("home", "🏠 Main Dashboard"),
                 ("request", "📥 Request Material"),
                 ("admin", "👑 Admin Panel"),
-                ("broadcast", "📢 Broadcast Message")
+                ("broadcast", "📢 Broadcast Message"),
+                ("addcoadmin", "➕ Add Co-Admin"),
+                ("removecoadmin", "➖ Remove Co-Admin"),
+                ("coadmins", "👥 List Co-Admins")
             ]
             await bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=ADMIN_ID))
         logger.info("Bot commands menu registered successfully.")
@@ -106,17 +117,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_main_menu(update.message, user.first_name, is_edit=False)
 
 async def show_main_menu(message_obj, name, is_edit=True):
-    """Renders the top level dashboard."""
+    """Renders the top level highly polished dashboard."""
     keyboard = [
         [InlineKeyboardButton("🗂️ View Categories", callback_data="view_cats")],
-        [InlineKeyboardButton("📥 Request Material", callback_data="request")],
-        [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
+        [InlineKeyboardButton("👤 My Profile", callback_data="my_profile"), InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")],
+        [InlineKeyboardButton("📢 More Channels", callback_data="more_channels"), InlineKeyboardButton("🤖 More Bots", callback_data="more_bots")]
     ]
-    text = f"🔥 Hello {name}! Welcome to Main Menu.\n\nAapko jo bhi PDF, Video ya Notes chahiye, aap unka Naam chat me likh kar direct search kar sakte hain ya fir `/request [naam]` likh kar mang sakte hain!"
+    
+    text = (
+        f"📚 **Welcome {name} to the Ultimate Study Dashboard!** ✨\n\n"
+        f"Yahan aapko aapki padhai ke liye sabhi important **PDFs, Hand-written Notes, Question Banks aur Videos** bilkul free milenge! 🚀\n\n"
+        f"💡 **Kaise search karein?**\n"
+        f"• Aap seedhe chat me kisi bhi subject ya chapter ka naam (e.g., *Physics Notes*) likh kar bhej sakte hain, bot use automatically dhoodh lega!\n"
+        f"• Ya fir niche diye gaye **View Categories** option ka use karke systematic tariqe se padh sakte hain.\n\n"
+        f"📥 **Kuch alag se chahiye?**\n"
+        f"Agar koi material na mile, toh chat me `/request` likh kar direct humse maang sakte hain!\n\n"
+        f"🎯 *Padhte rahiye, badhte rahiye!*"
+    )
+    
     if is_edit:
-        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await message_obj.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     else:
-        await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await message_obj.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def cmd_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(context.bot, update.effective_user.id): return
@@ -138,48 +160,105 @@ async def show_categories_menu(message_obj, is_edit=True):
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 # ==========================================
-# SECTION 7: USER MATERIAL REQUEST SYSTEM
+# SECTION 7: USER CONVERSATIONAL REQUEST SYSTEM
 # ==========================================
 async def request_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Forwards user file request straight to Admin securely."""
+    """Initiates conversation flow or handles direct arguments for admin forwarding."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
 
     if len(context.args) < 1:
+        # User only typed /request, switch them to listening mode
+        user_states[user_id] = "waiting_for_request"
         await update.message.reply_text(
-            "❌ Please provide the file name.\n\n**Example:**\n`/request Class 12 Physics Notes`",
+            "📝 **Aapko kaunse extra notes ya study material chahiye?**\n\n"
+            "Kripya us book, subject ya notes ka naam niche type karke send karein. Aapki request seedhe Admin panel tak pahunchayi jayegi!",
             parse_mode='Markdown'
         )
         return
     
+    # User directly typed the material alongside command, process immediately
     file_request_name = " ".join(context.args)
-    user_info = f"{update.effective_user.first_name} (ID: {user_id})"
+    await process_and_send_request(update, context, user_id, file_request_name)
+
+async def process_and_send_request(update, context, user_id, file_request_name):
+    """Core request processing and dispatching engine to primary admin."""
+    user = update.effective_user
+    user_info = f"{user.first_name} (ID: `{user_id}` | Username: @{user.username or 'None'})"
     
     try:
         await context.bot.send_message(
             chat_id=ADMIN_ID,
-            text=f"🔔 **New Request Received!**\n\n👤 **User:** {user_info}\n📂 **Requested File:** {file_request_name}",
+            text=f"🔔 **[NEW REQUEST RECEIVED]**\n\n👤 **From User:** {user_info}\n📂 **Requested Material:** {file_request_name}\n\n"
+                 f"ℹ️ *Aap unhe directly provide kar sakte hain ya database me upload kar sakte hain.*",
             parse_mode='Markdown'
         )
         await update.message.reply_text(
-            "✅ Your request has been sent to the Admin! As soon as the material is available, it will be uploaded.",
+            "✅ **Aapki request safaltapoorvak Admin tak pahunch gayi hai!**\n\n"
+            "Jaise hi yeh material humare paas available hoga, ise upload kar diya jayega. Tab tak aap baaki dashboard materials se padhai jari rakh sakte hain! 👍",
             parse_mode='Markdown'
         )
+        # Clear request conversation state safely
+        user_states.pop(user_id, None)
     except Exception as e:
-        logger.error(f"Error in request_file: {e}")
-        await update.message.reply_text("❌ Something went wrong. Please try again later.")
+        logger.error(f"Error in dispatching request to admin: {e}")
+        await update.message.reply_text("❌ Upsee! Request bhejte samay kuch dikkat aayi. Kripya baad me try karein.")
 
 # ==========================================
-# SECTION 8: ADMINISTRATIVE MANAGEMENT
+# SECTION 8: ADMINISTRATIVE MANAGEMENT (MULTI-USER SUPPORT)
 # ==========================================
-async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Renders administrative operations dashboard."""
+async def add_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enables primary admin to authorize multiple contributors."""
     if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text("❌ Please provide a Telegram User ID.\nExample: `/addcoadmin 123456789`", parse_mode="Markdown")
+        return
+    try:
+        co_id = int(context.args[0])
+        if co_admins_col.find_one({"user_id": co_id}):
+            await update.message.reply_text("⚠️ Yeh user pehle se hi Co-Admin list me shamil hai.")
+            return
+        co_admins_col.insert_one({"user_id": co_id})
+        await update.message.reply_text(f"✅ User ID `{co_id}` ko safely **Co-Admin** bana diya gaya hai! Ab yeh bhi files upload kar sakte hain.", parse_mode="Markdown")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID. Kripya sirf digits ka istemal karein.")
+
+async def remove_co_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Enables primary admin to revoke contributor access instantly."""
+    if update.effective_user.id != ADMIN_ID: return
+    if not context.args:
+        await update.message.reply_text("❌ Please provide a Telegram User ID.\nExample: `/removecoadmin 123456789`", parse_mode="Markdown")
+        return
+    try:
+        co_id = int(context.args[0])
+        res = co_admins_col.delete_one({"user_id": co_id})
+        if res.deleted_count > 0:
+            await update.message.reply_text(f"✅ User ID `{co_id}` se Co-Admin permissions wapas le li gayi hain.")
+        else:
+            await update.message.reply_text("❌ Yeh User ID Co-Admin list me nahi mili.")
+    except ValueError:
+        await update.message.reply_text("❌ Invalid User ID format.")
+
+async def list_co_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lists all active authorized co-admins/contributors."""
+    if update.effective_user.id != ADMIN_ID: return
+    co_list = list(co_admins_col.find({}))
+    if not co_list:
+        await update.message.reply_text("👥 Abhi tak koi extra Co-Admin nahi banaya gaya hai.")
+        return
+    msg = "👑 **Current Authorized Co-Admins:**\n\n"
+    for idx, co in enumerate(co_list, 1):
+        msg += f"{idx}. ID: `{co['user_id']}`\n"
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Renders administrative operations dashboard for primary & co-admins."""
+    if not is_admin_or_co_admin(update.effective_user.id): return
     keyboard = [
         [InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")],
         [InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]
     ]
-    await update.message.reply_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    await update.message.reply_text("👑 *Admin & Contributor Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
 async def manage_files_list(query):
     """Lists files inside admin interface."""
@@ -227,22 +306,46 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.message.delete()
                 except Exception: pass
                 await show_main_menu(query.message, query.from_user.first_name, is_edit=False)
-        elif query.data == "request":
-            await query.edit_message_text("❌ Please send the file name.\n\nExample:\n**Class 12 Physics Notes**", parse_mode='Markdown')
-            
 
-        elif query.data == "admin_home" and user_id == ADMIN_ID:
+        elif query.data == "go_home":
+            await show_main_menu(query.message, query.from_user.first_name, is_edit=True)
+
+        elif query.data == "more_channels":
+            keyboard = [
+                [InlineKeyboardButton("📢 Join Update Channel", url=f"https://t.me/{CHANNEL_USERNAME.replace('@','')}")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")]
+            ]
+            await query.edit_message_text(
+                "📢 **Hamare Dusre Channels & Groups:**\n\n"
+                "Niche diye gaye links ko join karke aap daily quizzes, important announcements aur direct discussion group se jud sakte hain. Check out now! 👇",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+        elif query.data == "more_bots":
+            keyboard = [
+                [InlineKeyboardButton("🤖 Main Study Bot", url=f"https://t.me/{context.bot.username}")],
+                [InlineKeyboardButton("🔙 Back to Menu", callback_data="go_home")]
+            ]
+            await query.edit_message_text(
+                "🤖 **Hamare Future AI & Automation Bots:**\n\n"
+                "Aane wale samay me hum aur bhi behtareen tools (Jaise Quiz Bots, Automated Doubt Solvers, aur Custom AI Assistants) launch karne wale hain. Un sabki direct list aapko yahan dekhne ko milegi! Stay tuned! 🔥",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="Markdown"
+            )
+
+        elif query.data == "admin_home" and is_admin_or_co_admin(user_id):
             keyboard = [[InlineKeyboardButton("📂 Manage All Content", callback_data="manage_files")], [InlineKeyboardButton("📊 Bot Stats", callback_data="bot_stats")]]
             await query.edit_message_text("👑 *Admin Control Panel:*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data == "manage_files" and user_id == ADMIN_ID:
+        elif query.data == "manage_files" and is_admin_or_co_admin(user_id):
             await manage_files_list(query)
 
-        elif query.data.startswith("editfile_") and user_id == ADMIN_ID:
+        elif query.data.startswith("editfile_") and is_admin_or_co_admin(user_id):
             fid = query.data.replace("editfile_", "")
             await edit_file_options(query, fid)
 
-        elif query.data.startswith("toggle_") and user_id == ADMIN_ID:
+        elif query.data.startswith("toggle_") and is_admin_or_co_admin(user_id):
             fid = query.data.replace("toggle_", "")
             f = material_col.find_one({"_id": ObjectId(fid)})
             if f:
@@ -250,12 +353,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 material_col.update_one({"_id": ObjectId(fid)}, {"$set": {"status": nst}})
                 await edit_file_options(query, fid)
 
-        elif query.data.startswith("del_") and user_id == ADMIN_ID:
+        elif query.data.startswith("del_") and is_admin_or_co_admin(user_id):
             fid = query.data.replace("del_", "")
             material_col.delete_one({"_id": ObjectId(fid)})
             await manage_files_list(query)
 
-        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and user_id == ADMIN_ID:
+        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and is_admin_or_co_admin(user_id):
             mode, fid = query.data.split("_", 1)
             admin_states[user_id] = {"action": mode, "fid": fid}
             keyboard = [
@@ -264,7 +367,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             await query.edit_message_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tcat_") and user_id == ADMIN_ID:
+        elif query.data.startswith("tcat_") and is_admin_or_co_admin(user_id):
             tcat = query.data.replace("tcat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["target_cat"] = tcat
@@ -274,7 +377,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 await query.edit_message_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("tsub_") and user_id == ADMIN_ID:
+        elif query.data.startswith("tsub_") and is_admin_or_co_admin(user_id):
             tsub = query.data.replace("tsub_", "")
             state = admin_states.get(user_id)
             if state:
@@ -294,7 +397,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "bot_stats":
             total_users = users_col.count_documents({})
             total_files = material_col.count_documents({})
-            back = "admin_home" if user_id == ADMIN_ID else "go_home"
+            back = "admin_home" if is_admin_or_co_admin(user_id) else "go_home"
             await query.edit_message_text(f"📊 *Bot Status:*\n\n👥 Users: {total_users}\n📂 Files: {total_files}", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=back)]]), parse_mode="Markdown")
 
         elif query.data == "my_profile":
@@ -330,7 +433,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
 
-        elif query.data.startswith("acat_") and user_id == ADMIN_ID:
+        elif query.data.startswith("acat_") and is_admin_or_co_admin(user_id):
             category = query.data.replace("acat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["category"] = category
@@ -340,7 +443,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 await query.edit_message_text(f"Category *{category}* done. Select **Subject**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("asub_") and user_id == ADMIN_ID:
+        elif query.data.startswith("asub_") and is_admin_or_co_admin(user_id):
             subject = query.data.replace("asub_", "")
             file_data = admin_states.get(user_id)
             if file_data:
@@ -357,7 +460,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # SECTION 10: COMMUNICATIONS & SYSTEM LOGIC
 # ==========================================
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Sends a broadcast message to all users."""
+    """Sends a broadcast message to all users (Strictly Main Admin only)."""
     if update.effective_user.id != ADMIN_ID: return
     if not context.args: return
     broadcast_text = update.message.text.split(None, 1)[1]
@@ -370,9 +473,9 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📢 Broadcast Done!")
 
 async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Intercepts media documents specifically for admin upload streams."""
+    """Intercepts media documents specifically for authorized admin/co-admin upload streams."""
     user_id = update.effective_user.id
-    if user_id != ADMIN_ID: return
+    if not is_admin_or_co_admin(user_id): return
     
     message = update.message
     file_id, file_name, file_type = None, "Unnamed", None
@@ -391,18 +494,28 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
         ]
         await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles text query searches specifically for non-command messages."""
+async def handle_user_incoming_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles incoming text queries; routes safely between material requests and standard lookups."""
     user_id = update.effective_user.id
     if not await is_subscribed(context.bot, user_id): return
     
-    search_query = update.message.text
-    if search_query.startswith("/"): return 
+    incoming_text = update.message.text
+    if incoming_text.startswith("/"): return 
 
-    results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
-    count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
+    # Route 1: If the user is currently in a conversation flow trying to type out a manual request
+    if user_states.get(user_id) == "waiting_for_request":
+        await process_and_send_request(update, context, user_id, incoming_text)
+        return
+
+    # Route 2: Standard Material Search Query Processing
+    results = list(material_col.find({"file_name": {"$regex": incoming_text, "$options": "i"}, "status": "live"}))
+    count = len(results)
+    
     if count == 0:
-        await update.message.reply_text(f"🔍 '{search_query}' ke liye koi live material nahi mila.")
+        await update.message.reply_text(
+            f"🔍 '{incoming_text}' ke liye abhi koi live material nahi mila.\n\n"
+            f"💡 Agar aapko yeh material urgently chahiye, toh aap `/request {incoming_text}` likh kar direct humse maang sakte hain!"
+        )
     else:
         text = f"🔍 *Search Results ({count}):*\n\n"
         for mat in results:
@@ -438,21 +551,26 @@ def main():
     """Starts the bot application and registers handlers safely."""
     app = Application.builder().token(BOT_TOKEN).post_init(setup_menus).build()
 
-    # Command Handlers
+    # User & Core Control Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", start))
     app.add_handler(CommandHandler("categories", cmd_categories))
+    app.add_handler(CommandHandler("request", request_file))
+    
+    # Primary Admin Exclusive Management Commands
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
-    #app.add_handler(CommandHandler("request", request_file))
+    app.add_handler(CommandHandler("addcoadmin", add_co_admin))
+    app.add_handler(CommandHandler("removecoadmin", remove_co_admin))
+    app.add_handler(CommandHandler("coadmins", list_co_admins))
     
     # Callback Query Handler
     app.add_handler(CallbackQueryHandler(button_click))
     
-    # Message Handlers with correct Filters and Callbacks mapping
+    # Message Handlers mapped accurately via Regex/Filters
     app.add_handler(MessageHandler(filters.Regex(r'^/file_[a-fA-F0-9]{24}$'), handle_file_link))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_incoming_messages))
 
     # Error Handler
     app.add_error_handler(error_handler)
