@@ -114,8 +114,8 @@ async def show_categories_menu(message_obj, is_edit=True):
         else: await message_obj.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
         return
     
-    # Delimiter changed to ":" to support spaces or underscores in categories
-    keyboard = [[InlineKeyboardButton(f"📂 {cat}", callback_data=f"cat:{cat}")] for cat in categories]
+    # Strictly safe structure routing prefix
+    keyboard = [[InlineKeyboardButton(f"📂 {cat}", callback_data=f"vcat_{cat}")] for cat in categories]
     keyboard.append([InlineKeyboardButton("🏠 Main Menu", callback_data="go_home")])
     if is_edit: await message_obj.edit_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
     else: await message_obj.reply_text("📂 Niche di gayi categories me se chunein:", reply_markup=InlineKeyboardMarkup(keyboard))
@@ -139,7 +139,7 @@ async def manage_files_list(query):
     keyboard = []
     for f in files:
         status_icon = "🟢" if f.get("status", "live") == "live" else "🔴"
-        keyboard.append([InlineKeyboardButton(f"{status_icon} [{f['category']}-{f.get('subject','General')}] {f['file_name']}", callback_data=f"editfile:{f['_id']}")])
+        keyboard.append([InlineKeyboardButton(f"{status_icon} [{f['category']}-{f.get('subject','General')}] {f['file_name']}", callback_data=f"editfile_{f['_id']}")])
     keyboard.append([InlineKeyboardButton("🏠 Back to Admin", callback_data="admin_home")])
     await query.edit_text("📂 *Manage Content (Click to edit):*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -151,9 +151,9 @@ async def edit_file_options(query, file_id):
     toggle_text = "🔴 Hide From Users" if current_status == "live" else "🟢 Make It Live"
     
     keyboard = [
-        [InlineKeyboardButton(toggle_text, callback_data=f"toggle:{file_id}")],
-        [InlineKeyboardButton("📦 Transfer File", callback_data=f"move:{file_id}"), InlineKeyboardButton("👯 Copy File", callback_data=f"copy:{file_id}")],
-        [InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del:{file_id}")],
+        [InlineKeyboardButton(toggle_text, callback_data=f"toggle_{file_id}")],
+        [InlineKeyboardButton("📦 Transfer File", callback_data=f"move_{file_id}"), InlineKeyboardButton("👯 Copy File", callback_data=f"copy_{file_id}")],
+        [InlineKeyboardButton("🗑️ Delete Permanently", callback_data=f"del_{file_id}")],
         [InlineKeyboardButton("🔙 Back to List", callback_data="manage_files")]
     ]
     await query.edit_text(f"📝 *Managing:* `{file['file_name']}`\n📂 Cat: `{file['category']}` | 📚 Sub: `{file.get('subject','General')}`\n⚡ Status: `{current_status.upper()}`", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -163,7 +163,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     
-    # Instant response to remove telegram loading lag
+    # Fast trigger acknowledgment to avoid loading spins on user app
     await query.answer()
 
     try:
@@ -171,8 +171,7 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if await is_subscribed(context.bot, user_id):
                 try:
                     await query.message.delete()
-                except Exception:
-                    pass
+                except Exception: pass
                 await show_main_menu(query.message, query.from_user.first_name, is_edit=False)
 
         elif query.data == "go_home":
@@ -185,44 +184,44 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "manage_files" and user_id == ADMIN_ID:
             await manage_files_list(query)
 
-        elif query.data.startswith("editfile:") and user_id == ADMIN_ID:
-            fid = query.data.split(":")[1]
+        elif query.data.startswith("editfile_") and user_id == ADMIN_ID:
+            fid = query.data.split("_")[1]
             await edit_file_options(query, fid)
 
-        elif query.data.startswith("toggle:") and user_id == ADMIN_ID:
-            fid = query.data.split(":")[1]
+        elif query.data.startswith("toggle_") and user_id == ADMIN_ID:
+            fid = query.data.split("_")[1]
             f = material_col.find_one({"_id": ObjectId(fid)})
             if f:
                 nst = "hidden" if f.get("status", "live") == "live" else "live"
                 material_col.update_one({"_id": ObjectId(fid)}, {"$set": {"status": nst}})
                 await edit_file_options(query, fid)
 
-        elif query.data.startswith("del:") and user_id == ADMIN_ID:
-            fid = query.data.split(":")[1]
+        elif query.data.startswith("del_") and user_id == ADMIN_ID:
+            fid = query.data.split("_")[1]
             material_col.delete_one({"_id": ObjectId(fid)})
             await manage_files_list(query)
 
-        elif (query.data.startswith("move:") or query.data.startswith("copy:")) and user_id == ADMIN_ID:
-            mode, fid = query.data.split(":")
+        elif (query.data.startswith("move_") or query.data.startswith("copy_")) and user_id == ADMIN_ID:
+            mode, fid = query.data.split("_")
             admin_states[user_id] = {"action": mode, "fid": fid}
             keyboard = [
-                [InlineKeyboardButton("📚 SSC", callback_data="targetcat:SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="targetcat:UPSC")],
-                [InlineKeyboardButton("💻 Banking", callback_data="targetcat:Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="targetcat:NEET_JEE")]
+                [InlineKeyboardButton("📚 SSC", callback_data="tcat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="tcat_UPSC")],
+                [InlineKeyboardButton("💻 Banking", callback_data="tcat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="tcat_NEET_JEE")]
             ]
             await query.edit_text("🎯 Target **Main Category** select kijiye:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("targetcat:") and user_id == ADMIN_ID:
-            tcat = query.data.split(":")[1]
+        elif query.data.startswith("tcat_") and user_id == ADMIN_ID:
+            tcat = query.data.split("_")[1]
             if user_id in admin_states:
                 admin_states[user_id]["target_cat"] = tcat
                 keyboard = [
-                    [InlineKeyboardButton("📐 Maths", callback_data="targetsub:Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="targetsub:GK")],
-                    [InlineKeyboardButton("🧠 Reasoning", callback_data="targetsub:Reasoning"), InlineKeyboardButton("🔤 English", callback_data="targetsub:English")]
+                    [InlineKeyboardButton("📐 Maths", callback_data="tsub_Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="tsub_GK")],
+                    [InlineKeyboardButton("🧠 Reasoning", callback_data="tsub_Reasoning"), InlineKeyboardButton("🔤 English", callback_data="tsub_English")]
                 ]
                 await query.edit_text(f"Category *{tcat}* done. Target **Subject** chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("targetsub:") and user_id == ADMIN_ID:
-            tsub = query.data.split(":")[1]
+        elif query.data.startswith("tsub_") and user_id == ADMIN_ID:
+            tsub = query.data.split("_")[1]
             state = admin_states.get(user_id)
             if state:
                 orig_file = material_col.find_one({"_id": ObjectId(state["fid"])})
@@ -250,44 +249,47 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == "view_cats":
             await show_categories_menu(query.message, is_edit=True)
 
-        elif query.data.startswith("cat:"):
-            cat_name = query.data.split(":")[1]
+        elif query.data.startswith("vcat_"):
+            cat_name = query.data.replace("vcat_", "")
             subjects = material_col.distinct("subject", {"category": cat_name, "status": "live"})
             if not subjects:
                 await query.edit_text(f"❌ {cat_name} me koi live subjects nahi hain.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data="view_cats")]]))
                 return
-            keyboard = [[InlineKeyboardButton(f"📚 {sub}", callback_data=f"sub:{cat_name}:{sub}")] for sub in subjects]
+            # Splitting collision dynamic fix using double underscores '__'
+            keyboard = [[InlineKeyboardButton(f"📚 {sub}", callback_data=f"vsub_{cat_name}__{sub}")] for sub in subjects]
             keyboard.append([InlineKeyboardButton("🔙 Back to Categories", callback_data="view_cats")])
             await query.edit_text(f"📂 *Category: {cat_name}*\nSubject chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("sub:"):
-            _, cat_name, sub_name = query.data.split(":")
+        elif query.data.startswith("vsub_"):
+            # Double underscore protection guarantees absolute key value distribution
+            payload = query.data.replace("vsub_", "")
+            cat_name, sub_name = payload.split("__")
             materials = list(material_col.find({"category": cat_name, "subject": sub_name, "status": "live"}))
             if not materials:
-                await query.edit_text("❌ Khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"cat:{cat_name}")]]))
+                await query.edit_text("❌ Khali hai.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data=f"vcat_{cat_name}")]]))
                 return
-            keyboard = [[InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sendfile:{mat['_id']}")] for mat in materials]
-            keyboard.append([InlineKeyboardButton("🔙 Back to Subjects", callback_data=f"cat:{cat_name}")])
+            keyboard = [[InlineKeyboardButton(f"📥 {mat['file_name']}", callback_data=f"sfile_{mat['_id']}")] for mat in materials]
+            keyboard.append([InlineKeyboardButton("🔙 Back to Subjects", callback_data=f"vcat_{cat_name}")])
             await query.edit_text(f"📚 *{cat_name} ➡️ {sub_name}*:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("sendfile:"):
-            fid = query.data.split(":")[1]
+        elif query.data.startswith("sfile_"):
+            fid = query.data.split("_")[1]
             file_data = material_col.find_one({"_id": ObjectId(fid)})
             if file_data and file_data.get("status", "live") == "live":
                 await send_material_file(context.bot, user_id, file_data)
 
-        elif query.data.startswith("admin_cat:") and user_id == ADMIN_ID:
-            category = query.data.split(":")[1]
+        elif query.data.startswith("acat_") and user_id == ADMIN_ID:
+            category = query.data.replace("acat_", "")
             if user_id in admin_states:
                 admin_states[user_id]["category"] = category
                 keyboard = [
-                    [InlineKeyboardButton("📐 Maths", callback_data="admin_sub:Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="admin_sub:GK")],
-                    [InlineKeyboardButton("🧠 Reasoning", callback_data="admin_sub:Reasoning"), InlineKeyboardButton("🔤 English", callback_data="admin_sub:English")]
+                    [InlineKeyboardButton("📐 Maths", callback_data="asub_Maths"), InlineKeyboardButton("🌍 GK/GS", callback_data="asub_GK")],
+                    [InlineKeyboardButton("🧠 Reasoning", callback_data="asub_Reasoning"), InlineKeyboardButton("🔤 English", callback_data="asub_English")]
                 ]
                 await query.edit_text(f"Category *{category}* done. Select **Subject**:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-        elif query.data.startswith("admin_sub:") and user_id == ADMIN_ID:
-            subject = query.data.split(":")[1]
+        elif query.data.startswith("asub_") and user_id == ADMIN_ID:
+            subject = query.data.replace("asub_", "")
             file_data = admin_states.get(user_id)
             if file_data:
                 file_data["subject"] = subject
@@ -325,8 +327,8 @@ async def handle_admin_upload(update: Update, context: ContextTypes.DEFAULT_TYPE
     if file_id:
         admin_states[user_id] = {"file_id": file_id, "file_name": file_name, "file_type": file_type}
         keyboard = [
-            [InlineKeyboardButton("📚 SSC", callback_data="admin_cat:SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="admin_cat:UPSC")],
-            [InlineKeyboardButton("💻 Banking", callback_data="admin_cat:Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="admin_cat:NEET_JEE")]
+            [InlineKeyboardButton("📚 SSC", callback_data="acat_SSC"), InlineKeyboardButton("🏛️ UPSC", callback_data="acat_UPSC")],
+            [InlineKeyboardButton("💻 Banking", callback_data="acat_Banking"), InlineKeyboardButton("🧪 NEET/JEE", callback_data="acat_NEET_JEE")]
         ]
         await message.reply_text("📥 *Material mila!* Iski *Main Category* chunein:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
@@ -336,7 +338,7 @@ async def handle_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if not await is_subscribed(context.bot, user_id): return
     
     search_query = update.message.text
-    if search_query.startswith("/"): return # Let CommandHandlers process command strings
+    if search_query.startswith("/"): return 
 
     results = material_col.find({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
     count = material_col.count_documents({"file_name": {"$regex": search_query, "$options": "i"}, "status": "live"})
@@ -367,30 +369,25 @@ async def handle_file_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Invalid File ID.")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Logs the error and sends a telegram message to notify the developer."""
     logger.error("Exception while handling an update:", exc_info=context.error)
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(setup_menus).build()
 
-    # Priority 1: Handlers with specific triggers (Commands & Inline Buttons)
+    # Handlers Mapping with Structured Priorities
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("home", start))
     app.add_handler(CommandHandler("categories", cmd_categories))
     app.add_handler(CommandHandler("admin", admin_panel))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
+    
     app.add_handler(CallbackQueryHandler(button_click))
     
-    # Direct File Links Handler (from Search results)
     app.add_handler(MessageHandler(filters.Regex(r'^/file_[a-fA-F0-9]{24}$'), handle_file_link))
-    
-    # Priority 2: Generic filters (Media and Message types)
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO | filters.VIDEO, handle_admin_upload))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_user_search))
 
-    # Error Handler
     app.add_error_handler(error_handler)
-
     app.run_polling()
 
 if __name__ == '__main__':
